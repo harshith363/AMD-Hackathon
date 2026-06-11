@@ -34,6 +34,10 @@ def run_llm_interactive(orchestrator: WorkflowOrchestrator, print_summary) -> No
         user_text = input("You: ").strip()
         if user_text.lower() in {"exit", "quit", "bye"}:
             return
+        if _is_clarification_question(user_text, missing):
+            answer = _answer_clarification(client, user_text, collected, missing)
+            print(f"Assistant: {answer}")
+            continue
         transcript.append({"role": "user", "content": user_text})
         extracted = client.extract_intake(transcript, collected)
         if not extracted:
@@ -128,3 +132,81 @@ def _fallback_question(missing: list[str]) -> str:
     if not missing:
         return "Say run when you want me to process this."
     return f"Please share the {missing[0].replace('_', ' ')}."
+
+
+def _is_clarification_question(user_text: str, missing: list[str]) -> bool:
+    normalized = user_text.lower().strip()
+    if "?" in normalized:
+        return True
+    clarification_phrases = [
+        "what options",
+        "what can you",
+        "what do you",
+        "help",
+        "examples",
+        "show options",
+        "list options",
+        "available options",
+        "which options",
+        "what workflows",
+        "what categories",
+        "what documents",
+    ]
+    return any(phrase in normalized for phrase in clarification_phrases) and bool(missing)
+
+
+def _answer_clarification(client, user_text: str, collected: dict[str, Any], missing: list[str]) -> str:
+    deterministic = _deterministic_clarification(user_text, collected, missing)
+    if deterministic:
+        return deterministic
+    return client.answer_clarification(user_text, collected, missing) or _fallback_question(missing)
+
+
+def _deterministic_clarification(user_text: str, collected: dict[str, Any], missing: list[str]) -> str | None:
+    normalized = user_text.lower()
+    customer_type = collected.get("customer_type")
+    workflow = collected.get("workflow_type")
+
+    if "option" in normalized or "workflow" in normalized or "what can" in normalized or "help" in normalized:
+        if not workflow:
+            return (
+                "I can help you find new insurance, validate claim documents, or complete KYC/KYB validation. "
+                "Which one would you like to do?"
+            )
+        if workflow == "new_insurance":
+            if customer_type == "business":
+                return (
+                    "For a business, I can search property, employee life, employee health, or professional liability insurance. "
+                    "Which category should I use?"
+                )
+            if customer_type == "individual":
+                return (
+                    "For an individual, I can search health, life, motor, travel, home, or personal accident insurance. "
+                    "Which category should I use?"
+                )
+        if workflow == "claim_validation":
+            if customer_type == "business":
+                return (
+                    "For business claims, I can validate property damage, employee health, employee life, or professional liability claims. "
+                    "Which claim type is this?"
+                )
+            if customer_type == "individual":
+                return (
+                    "For individual claims, I can validate health, life, motor, travel, home, or personal accident claims. "
+                    "Which claim type is this?"
+                )
+
+    if "document" in normalized:
+        if workflow in {"claim_validation", "kyc_validation", "kyb_validation"}:
+            return (
+                "Please provide local file paths to the documents. I can process TXT files now and will use PDF/image extraction when those tools are available. "
+                "What file paths should I validate?"
+            )
+
+    if "categor" in normalized and workflow == "new_insurance":
+        if customer_type == "business":
+            return "Business insurance categories are property, employee life, employee health, and professional liability. Which one do you want?"
+        if customer_type == "individual":
+            return "Individual insurance categories are health, life, motor, travel, home, and personal accident. Which one do you want?"
+
+    return None

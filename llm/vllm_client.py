@@ -73,6 +73,35 @@ class VLLMClient:
         except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
             return None
 
+    def answer_clarification(self, user_text: str, collected: dict[str, Any], missing: list[str]) -> str | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "The user asked a clarification question during an insurance CLI intake. "
+            "Answer briefly and helpfully using only the supported capabilities below. "
+            "Do not invent unsupported workflows. End by asking one natural follow-up question "
+            "for the next missing field.\n\n"
+            "Supported customer types: business, individual.\n"
+            "Supported workflows: find new insurance, validate claim documents, complete KYC/KYB validation.\n"
+            "Business new insurance categories: property, employee life, employee health, professional liability.\n"
+            "Individual new insurance categories: health, life, motor, travel, home, personal accident.\n"
+            "Business claim types: property damage, employee health, employee life, professional liability.\n"
+            "Individual claim types: health, life, motor, travel, home, personal accident.\n"
+            "For document validation, users provide local file paths for PDFs, images, or TXT files.\n\n"
+            f"Collected so far: {json.dumps(collected, indent=2)}\n"
+            f"Missing fields: {json.dumps(missing)}\n"
+            f"User question: {user_text}"
+        )
+        try:
+            return self.chat(
+                prompt,
+                system="You answer clarification questions in a concise insurance operations CLI.",
+                max_tokens=180,
+                temperature=0.2,
+            )
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
     def extract_intake(self, transcript: list[dict[str, str]], current: dict[str, Any]) -> dict[str, Any] | None:
         if not self.enabled:
             return None
