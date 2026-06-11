@@ -73,24 +73,23 @@ class VLLMClient:
         except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
             return None
 
-    def answer_clarification(self, user_text: str, collected: dict[str, Any], missing: list[str]) -> str | None:
+    def answer_with_tool_result(
+        self,
+        user_text: str,
+        collected: dict[str, Any],
+        missing: list[str],
+        tool_result: dict[str, Any],
+    ) -> str | None:
         if not self.enabled:
             return None
         prompt = (
-            "The user asked a clarification question during an insurance CLI intake. "
-            "Answer briefly and helpfully using only the supported capabilities below. "
-            "Do not invent unsupported workflows. End by asking one natural follow-up question "
-            "for the next missing field.\n\n"
-            "Supported customer types: business, individual.\n"
-            "Supported workflows: find new insurance, validate claim documents, complete KYC/KYB validation.\n"
-            "Business new insurance categories: property, employee life, employee health, professional liability.\n"
-            "Individual new insurance categories: health, life, motor, travel, home, personal accident.\n"
-            "Business claim types: property damage, employee health, employee life, professional liability.\n"
-            "Individual claim types: health, life, motor, travel, home, personal accident.\n"
-            "For document validation, users provide local file paths for PDFs, images, or TXT files.\n\n"
+            "The user asked a clarification question during insurance workflow intake. "
+            "Answer using only the provided tool result. Do not invent options that are not in the tool result. "
+            "Keep it concise and end with one natural follow-up question for the next missing field.\n\n"
             f"Collected so far: {json.dumps(collected, indent=2)}\n"
             f"Missing fields: {json.dumps(missing)}\n"
-            f"User question: {user_text}"
+            f"User question: {user_text}\n"
+            f"Tool result: {json.dumps(tool_result, indent=2)}"
         )
         try:
             return self.chat(
@@ -102,18 +101,19 @@ class VLLMClient:
         except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
             return None
 
-    def extract_intake(self, transcript: list[dict[str, str]], current: dict[str, Any]) -> dict[str, Any] | None:
+    def extract_intake(
+        self,
+        transcript: list[dict[str, str]],
+        current: dict[str, Any],
+        domain_context: dict[str, Any],
+    ) -> dict[str, Any] | None:
         if not self.enabled:
             return None
         prompt = (
             "Extract structured insurance workflow intake from the transcript. Return JSON only. "
             "Do not include markdown. Preserve existing values unless the user clearly changes them.\n\n"
-            "Allowed customer_type values: business, individual.\n"
-            "Allowed workflow_type values: new_insurance, claim_validation, kyc_validation, kyb_validation.\n"
-            "Business insurance categories: property, employee_life, employee_health, professional_liability.\n"
-            "Individual insurance categories: health, life, motor, travel, home, personal_accident.\n"
-            "Business claim types: property_damage, employee_health, employee_life, professional_liability.\n"
-            "Individual claim types: health, life, motor, travel, home, personal_accident.\n"
+            "Use the domain context for allowed workflow types, insurance categories, and claim types. "
+            "Do not invent values outside the domain context.\n"
             "For document workflows, collect file_paths as a JSON array of strings.\n"
             "For product discovery, collect user_inputs as a JSON object of any business/customer details.\n"
             "Set ready_to_run true only when the user says to run, submit, start, validate, proceed, or has provided file paths for a document workflow.\n\n"
@@ -128,6 +128,7 @@ class VLLMClient:
             "\"ready_to_run\": false"
             "}\n\n"
             f"Existing values: {json.dumps(current, indent=2)}\n"
+            f"Domain context: {json.dumps(domain_context, indent=2)}\n"
             f"Transcript: {json.dumps(transcript, indent=2)}"
         )
         try:

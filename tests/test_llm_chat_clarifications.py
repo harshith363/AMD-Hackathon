@@ -4,8 +4,8 @@ from cli.llm_chat import _answer_clarification, _empty_intake
 
 
 class FakeClient:
-    def answer_clarification(self, user_text, collected, missing):
-        return "fallback"
+    def answer_with_tool_result(self, user_text, collected, missing, tool_result):
+        return None
 
 
 class LLMChatClarificationTests(unittest.TestCase):
@@ -16,7 +16,7 @@ class LLMChatClarificationTests(unittest.TestCase):
 
         self.assertIn("find new insurance", answer)
         self.assertIn("validate claim documents", answer)
-        self.assertIn("KYC/KYB", answer)
+        self.assertIn("complete KYC validation", answer)
         self.assertIn("Which one", answer)
 
     def test_new_individual_insurance_options_answers_categories(self):
@@ -28,6 +28,14 @@ class LLMChatClarificationTests(unittest.TestCase):
         self.assertIn("health", answer)
         self.assertIn("motor", answer)
         self.assertIn("personal accident", answer)
+
+    def test_give_me_options_answers_supported_workflows(self):
+        collected = _empty_intake()
+        collected["customer_type"] = "individual"
+        answer = _answer_clarification(FakeClient(), "give me options", collected, ["workflow_type"])
+
+        self.assertIn("find new insurance", answer)
+        self.assertIn("validate claim documents", answer)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from domain_tools import (
+    answer_capability_question,
+    get_claim_types,
+    get_insurance_categories,
+    get_supported_workflows,
+)
 from orchestrator.workflow import WorkflowOrchestrator
 from schemas.messages import DocumentPacketMessage, ProductDiscoveryMessage
 
@@ -39,7 +45,7 @@ def run_llm_interactive(orchestrator: WorkflowOrchestrator, print_summary) -> No
             print(f"Assistant: {answer}")
             continue
         transcript.append({"role": "user", "content": user_text})
-        extracted = client.extract_intake(transcript, collected)
+        extracted = client.extract_intake(transcript, collected, _domain_context(collected))
         if not extracted:
             print("Assistant: I could not parse that cleanly. Please rephrase with the case type, workflow, or file paths.")
             continue
@@ -138,6 +144,8 @@ def _is_clarification_question(user_text: str, missing: list[str]) -> bool:
     normalized = user_text.lower().strip()
     if "?" in normalized:
         return True
+    if any(word in normalized.split() for word in ["options", "option", "help"]):
+        return bool(missing)
     clarification_phrases = [
         "what options",
         "what can you",
@@ -156,57 +164,45 @@ def _is_clarification_question(user_text: str, missing: list[str]) -> bool:
 
 
 def _answer_clarification(client, user_text: str, collected: dict[str, Any], missing: list[str]) -> str:
-    deterministic = _deterministic_clarification(user_text, collected, missing)
-    if deterministic:
-        return deterministic
-    return client.answer_clarification(user_text, collected, missing) or _fallback_question(missing)
+    tool_result = answer_capability_question(user_text, collected, missing)
+    return client.answer_with_tool_result(user_text, collected, missing, tool_result) or _format_tool_result(tool_result, missing)
 
 
-def _deterministic_clarification(user_text: str, collected: dict[str, Any], missing: list[str]) -> str | None:
-    normalized = user_text.lower()
+def _domain_context(collected: dict[str, Any]) -> dict[str, Any]:
     customer_type = collected.get("customer_type")
-    workflow = collected.get("workflow_type")
+    return {
+        "supported_workflows": get_supported_workflows(customer_type),
+        "insurance_categories": get_insurance_categories(customer_type),
+        "claim_types": get_claim_types(customer_type),
+    }
 
-    if "option" in normalized or "workflow" in normalized or "what can" in normalized or "help" in normalized:
-        if not workflow:
-            return (
-                "I can help you find new insurance, validate claim documents, or complete KYC/KYB validation. "
-                "Which one would you like to do?"
-            )
-        if workflow == "new_insurance":
-            if customer_type == "business":
-                return (
-                    "For a business, I can search property, employee life, employee health, or professional liability insurance. "
-                    "Which category should I use?"
-                )
-            if customer_type == "individual":
-                return (
-                    "For an individual, I can search health, life, motor, travel, home, or personal accident insurance. "
-                    "Which category should I use?"
-                )
-        if workflow == "claim_validation":
-            if customer_type == "business":
-                return (
-                    "For business claims, I can validate property damage, employee health, employee life, or professional liability claims. "
-                    "Which claim type is this?"
-                )
-            if customer_type == "individual":
-                return (
-                    "For individual claims, I can validate health, life, motor, travel, home, or personal accident claims. "
-                    "Which claim type is this?"
-                )
 
-    if "document" in normalized:
-        if workflow in {"claim_validation", "kyc_validation", "kyb_validation"}:
-            return (
-                "Please provide local file paths to the documents. I can process TXT files now and will use PDF/image extraction when those tools are available. "
-                "What file paths should I validate?"
-            )
+def _format_tool_result(tool_result: dict[str, Any], missing: list[str]) -> str:
+    tool_name = tool_result.get("tool")
+    if tool_name == "get_supported_workflows":
+        labels = [item["label"] for item in tool_result["workflows"]]
+        return f"I can help you {', '.join(labels)}. Which one would you like to do?"
+    if tool_name == "get_insurance_categories":
+        categories = tool_result["categories"]
+        if isinstance(categories, dict):
+            business = ", ".join(_display_label(item) for item in categories["business"])
+            individual = ", ".join(_display_label(item) for item in categories["individual"])
+            return f"Business categories: {business}. Individual categories: {individual}. Which category should I use?"
+        return f"I can search these insurance categories: {', '.join(_display_label(item) for item in categories)}. Which category should I use?"
+    if tool_name == "get_claim_types":
+        claim_types = tool_result["claim_types"]
+        if isinstance(claim_types, dict):
+            business = ", ".join(_display_label(item) for item in claim_types["business"])
+            individual = ", ".join(_display_label(item) for item in claim_types["individual"])
+            return f"Business claim types: {business}. Individual claim types: {individual}. Which claim type is this?"
+        return f"I can validate these claim types: {', '.join(_display_label(item) for item in claim_types)}. Which claim type is this?"
+    if tool_name == "get_required_documents":
+        documents = tool_result["required_documents"]
+        if documents:
+            return f"I need these documents: {', '.join(documents)}. Please provide the file paths."
+        return "Please provide the document file paths you want me to validate."
+    return _fallback_question(missing)
 
-    if "categor" in normalized and workflow == "new_insurance":
-        if customer_type == "business":
-            return "Business insurance categories are property, employee life, employee health, and professional liability. Which one do you want?"
-        if customer_type == "individual":
-            return "Individual insurance categories are health, life, motor, travel, home, and personal accident. Which one do you want?"
 
-    return None
+def _display_label(value: str) -> str:
+    return value.replace("_", " ")

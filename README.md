@@ -4,6 +4,8 @@ LLM-powered CLI and notebook-friendly prototype for insurance operations. It was
 
 The interactive CLI is conversational: it does not show numbered workflow menus. The LLM asks the user questions, extracts the user’s typed answers into structured messages, and then routes the case through the agent workflow.
 
+Capabilities and menu-like options are not hardcoded into LLM prompts. They come from local domain tools, and the LLM turns those tool results into natural language.
+
 The app supports:
 
 - Business and individual user journeys
@@ -12,11 +14,25 @@ The app supports:
 - Individual KYC validation
 - Business KYB validation
 - Deterministic validation rules for missing documents, field presence, format checks, and cross-document consistency
+- Tool-backed discovery of supported workflows, insurance categories, claim types, and required documents
 - JSON and Markdown reports
 - SQLite audit persistence
 - vLLM-generated conversational intake and optional report explanations
 
 Important: deterministic rules still decide status, missing documents, validation issues, and human escalation. The LLM powers conversation and extraction of the user’s intent; it does not override compliance decisions.
+
+## Tool-Backed Conversation
+
+When the user asks a clarification question like `give me options`, the CLI invokes local domain tools:
+
+```text
+get_supported_workflows(customer_type)
+get_insurance_categories(customer_type)
+get_claim_types(customer_type)
+get_required_documents(customer_type, workflow_type, case_type)
+```
+
+The tool result is then sent to vLLM so the model can phrase a helpful answer. This keeps business logic in Python modules and lets the LLM focus on reasoning, wording, and conversational flow.
 
 ## Project Layout
 
@@ -29,6 +45,7 @@ Important: deterministic rules still decide status, missing documents, validatio
 ├── cli/                           # LLM conversational CLI loop
 ├── db/                            # SQLite persistence agent
 ├── demo_data/                     # Scripted hackathon demo documents
+├── domain_tools/                  # Tool functions for workflows, categories, claims, and documents
 ├── document_processing/           # Intake, classification, extraction
 ├── llm/                           # vLLM/OpenAI-compatible client
 ├── mcp_server/                    # Mock MCP catalogue and client
