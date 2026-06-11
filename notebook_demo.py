@@ -5,7 +5,14 @@ from orchestrator.workflow import WorkflowOrchestrator
 from schemas.messages import ProductDiscoveryMessage
 
 
-def run_demo(demo_id: str = "all", use_llm: bool = False):
+def run_demo(
+    demo_id: str = "all",
+    use_llm: bool = False,
+    vllm_base_url: str = "http://localhost:8000/v1",
+    vllm_model: str = "amd-hackathon-model",
+    vllm_api_key: str = "EMPTY",
+    vllm_timeout_seconds: int = 20,
+):
     """Notebook-friendly demo entrypoint.
 
     Example:
@@ -13,7 +20,13 @@ def run_demo(demo_id: str = "all", use_llm: bool = False):
         reports = run_demo("all", use_llm=False)
     """
 
-    orchestrator = WorkflowOrchestrator(use_llm=use_llm)
+    orchestrator = WorkflowOrchestrator(
+        use_llm=use_llm,
+        vllm_base_url=vllm_base_url,
+        vllm_model=vllm_model,
+        vllm_api_key=vllm_api_key,
+        vllm_timeout_seconds=vllm_timeout_seconds,
+    )
     scenarios = {
         "1": lambda: orchestrator.run_product_discovery(
             ProductDiscoveryMessage(

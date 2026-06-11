@@ -3,15 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from cli.prompts import (
-    BUSINESS_CLAIM_TYPES,
-    BUSINESS_INSURANCE_CATEGORIES,
-    INDIVIDUAL_CLAIM_TYPES,
-    INDIVIDUAL_INSURANCE_CATEGORIES,
-    choose,
-    collect_file_paths,
-    collect_key_values,
-)
+from cli.llm_chat import run_llm_interactive
 from orchestrator.workflow import WorkflowOrchestrator
 from schemas.messages import DocumentPacketMessage, ProductDiscoveryMessage
 
@@ -19,9 +11,19 @@ from schemas.messages import DocumentPacketMessage, ProductDiscoveryMessage
 def main() -> None:
     parser = argparse.ArgumentParser(description="Agentic Insurance Operations Assistant")
     parser.add_argument("--demo", choices=["all", "1", "2", "3", "4", "5"], help="Run scripted demo scenario")
-    parser.add_argument("--use-llm", action="store_true", help="Use vLLM/OpenAI-compatible endpoint for report explanations")
+    parser.add_argument("--use-llm", action="store_true", help="Use vLLM/OpenAI-compatible endpoint")
+    parser.add_argument("--vllm-base-url", default="http://localhost:8000/v1", help="vLLM OpenAI-compatible base URL")
+    parser.add_argument("--vllm-model", default="amd-hackathon-model", help="vLLM served model name")
+    parser.add_argument("--vllm-api-key", default="EMPTY", help="API key for OpenAI-compatible vLLM endpoint")
+    parser.add_argument("--vllm-timeout-seconds", type=int, default=20, help="vLLM request timeout")
     args = parser.parse_args()
-    orchestrator = WorkflowOrchestrator(use_llm=args.use_llm)
+    orchestrator = WorkflowOrchestrator(
+        use_llm=args.use_llm or args.demo is None,
+        vllm_base_url=args.vllm_base_url,
+        vllm_model=args.vllm_model,
+        vllm_api_key=args.vllm_api_key,
+        vllm_timeout_seconds=args.vllm_timeout_seconds,
+    )
     if args.demo:
         run_demo(orchestrator, args.demo)
     else:
@@ -29,51 +31,7 @@ def main() -> None:
 
 
 def run_interactive(orchestrator: WorkflowOrchestrator) -> None:
-    while True:
-        customer_type = choose("Select user type", {"1": "business", "2": "individual", "3": "exit"})
-        if customer_type == "exit":
-            return
-        if customer_type == "business":
-            workflow = choose(
-                "Business options",
-                {"1": "new_insurance", "2": "claim_validation", "3": "kyb_validation", "4": "exit"},
-            )
-        else:
-            workflow = choose(
-                "Individual options",
-                {"1": "new_insurance", "2": "claim_validation", "3": "kyc_validation", "4": "exit"},
-            )
-        if workflow == "exit":
-            continue
-        if workflow == "new_insurance":
-            categories = BUSINESS_INSURANCE_CATEGORIES if customer_type == "business" else INDIVIDUAL_INSURANCE_CATEGORIES
-            category = choose("Select insurance category", categories)
-            details = collect_key_values("Collecting basic details for product discovery.")
-            report = orchestrator.run_product_discovery(
-                ProductDiscoveryMessage(
-                    session_id=orchestrator.new_session_id(),
-                    customer_type=customer_type,
-                    insurance_category=category,
-                    user_inputs=details,
-                )
-            )
-        else:
-            if workflow == "claim_validation":
-                claim_types = BUSINESS_CLAIM_TYPES if customer_type == "business" else INDIVIDUAL_CLAIM_TYPES
-                case_type = choose("Select claim type", claim_types)
-            else:
-                case_type = "kyb" if customer_type == "business" else "kyc"
-            paths = collect_file_paths()
-            report = orchestrator.run_document_validation(
-                DocumentPacketMessage(
-                    session_id=orchestrator.new_session_id(),
-                    customer_type=customer_type,
-                    workflow_type=workflow,
-                    case_type=case_type,
-                    file_paths=paths,
-                )
-            )
-        print_cli_summary(report)
+    run_llm_interactive(orchestrator, print_cli_summary)
 
 
 def run_demo(orchestrator: WorkflowOrchestrator, selected: str) -> None:

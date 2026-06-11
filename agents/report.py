@@ -13,7 +13,7 @@ class ReportAgent:
     name = "Report Agent"
 
     def __init__(self, llm_client: VLLMClient | None = None) -> None:
-        self.llm_client = llm_client or VLLMClient.from_env()
+        self.llm_client = llm_client or VLLMClient.from_config()
 
     def validation_report(
         self,

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
-
-from config import load_dotenv
 
 
 @dataclass
@@ -26,15 +23,21 @@ class VLLMClient:
     enabled: bool = False
 
     @classmethod
-    def from_env(cls, enabled: bool | None = None) -> "VLLMClient":
-        load_dotenv()
-        env_enabled = os.getenv("INSURANCE_USE_LLM", "").lower() in {"1", "true", "yes", "on"}
+    def from_config(
+        cls,
+        *,
+        base_url: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        timeout_seconds: int | None = None,
+        enabled: bool = False,
+    ) -> "VLLMClient":
         return cls(
-            base_url=os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1").rstrip("/"),
-            model=os.getenv("VLLM_MODEL", "amd-hackathon-model"),
-            api_key=os.getenv("VLLM_API_KEY", "EMPTY"),
-            timeout_seconds=int(os.getenv("VLLM_TIMEOUT_SECONDS", "20")),
-            enabled=env_enabled if enabled is None else enabled,
+            base_url=(base_url or "http://localhost:8000/v1").rstrip("/"),
+            model=model or "amd-hackathon-model",
+            api_key=api_key or "EMPTY",
+            timeout_seconds=timeout_seconds or 20,
+            enabled=enabled,
         )
 
     def explain_report(self, report: dict[str, Any]) -> str | None:
@@ -47,22 +50,87 @@ class VLLMClient:
             f"{json.dumps(_compact_report(report), indent=2)}"
         )
         try:
-            return self.chat(prompt)
+            return self.chat(prompt, max_tokens=220, temperature=0.2)
         except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
             return None
 
-    def chat(self, prompt: str) -> str:
+    def ask_intake_question(self, collected: dict[str, Any], missing: list[str]) -> str | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "You are running an insurance operations CLI. Ask exactly one short, natural question "
+            "to collect the next missing item. Do not show numbered options. Do not explain features.\n\n"
+            f"Collected so far: {json.dumps(collected, indent=2)}\n"
+            f"Missing fields: {json.dumps(missing)}"
+        )
+        try:
+            return self.chat(
+                prompt,
+                system="You are a concise insurance assistant that asks one question at a time.",
+                max_tokens=80,
+                temperature=0.3,
+            )
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def extract_intake(self, transcript: list[dict[str, str]], current: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "Extract structured insurance workflow intake from the transcript. Return JSON only. "
+            "Do not include markdown. Preserve existing values unless the user clearly changes them.\n\n"
+            "Allowed customer_type values: business, individual.\n"
+            "Allowed workflow_type values: new_insurance, claim_validation, kyc_validation, kyb_validation.\n"
+            "Business insurance categories: property, employee_life, employee_health, professional_liability.\n"
+            "Individual insurance categories: health, life, motor, travel, home, personal_accident.\n"
+            "Business claim types: property_damage, employee_health, employee_life, professional_liability.\n"
+            "Individual claim types: health, life, motor, travel, home, personal_accident.\n"
+            "For document workflows, collect file_paths as a JSON array of strings.\n"
+            "For product discovery, collect user_inputs as a JSON object of any business/customer details.\n"
+            "Set ready_to_run true only when the user says to run, submit, start, validate, proceed, or has provided file paths for a document workflow.\n\n"
+            "Return this JSON shape:\n"
+            "{"
+            "\"customer_type\": null,"
+            "\"workflow_type\": null,"
+            "\"insurance_category\": null,"
+            "\"case_type\": null,"
+            "\"file_paths\": [],"
+            "\"user_inputs\": {},"
+            "\"ready_to_run\": false"
+            "}\n\n"
+            f"Existing values: {json.dumps(current, indent=2)}\n"
+            f"Transcript: {json.dumps(transcript, indent=2)}"
+        )
+        try:
+            content = self.chat(
+                prompt,
+                system="You are a precise JSON extraction engine for an insurance CLI.",
+                max_tokens=420,
+                temperature=0.0,
+            )
+            return _extract_json_object(content)
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def chat(
+        self,
+        prompt: str,
+        *,
+        system: str = "You explain insurance workflow results clearly while preserving deterministic rule outcomes.",
+        max_tokens: int = 220,
+        temperature: float = 0.2,
+    ) -> str:
         payload = {
             "model": self.model,
             "messages": [
                 {
                     "role": "system",
-                    "content": "You explain insurance workflow results clearly while preserving deterministic rule outcomes.",
+                    "content": system,
                 },
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.2,
-            "max_tokens": 220,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         }
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -92,3 +160,17 @@ def _compact_report(report: dict[str, Any]) -> dict[str, Any]:
         "recommendations",
     ]
     return {key: report[key] for key in keys if key in report}
+
+
+def _extract_json_object(content: str) -> dict[str, Any] | None:
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:].strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    parsed = json.loads(text[start : end + 1])
+    return parsed if isinstance(parsed, dict) else None

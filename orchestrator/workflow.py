@@ -20,8 +20,22 @@ from schemas.messages import DocumentPacketMessage, ProductDiscoveryMessage, Use
 
 
 class WorkflowOrchestrator:
-    def __init__(self, use_llm: bool | None = None) -> None:
-        self.llm_client = VLLMClient.from_env(enabled=use_llm)
+    def __init__(
+        self,
+        use_llm: bool | None = None,
+        *,
+        vllm_base_url: str | None = None,
+        vllm_model: str | None = None,
+        vllm_api_key: str | None = None,
+        vllm_timeout_seconds: int | None = None,
+    ) -> None:
+        self.llm_client = VLLMClient.from_config(
+            base_url=vllm_base_url,
+            model=vllm_model,
+            api_key=vllm_api_key,
+            timeout_seconds=vllm_timeout_seconds,
+            enabled=bool(use_llm),
+        )
         self.router = RouterAgent()
         self.product_discovery = ProductDiscoveryAgent()
         self.document_intake = DocumentIntakeAgent()

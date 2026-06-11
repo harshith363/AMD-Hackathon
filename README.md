@@ -1,6 +1,8 @@
 # Agentic Insurance Operations Assistant
 
-CLI and notebook-friendly prototype for an agentic insurance operations assistant. It was built for an AMD Jupyter cloud hackathon environment with optional ROCm/vLLM support.
+LLM-powered CLI and notebook-friendly prototype for insurance operations. It was built for an AMD Jupyter cloud hackathon environment with ROCm/vLLM support.
+
+The interactive CLI is conversational: it does not show numbered workflow menus. The LLM asks the user questions, extracts the user’s typed answers into structured messages, and then routes the case through the agent workflow.
 
 The app supports:
 
@@ -9,27 +11,26 @@ The app supports:
 - Claim document validation
 - Individual KYC validation
 - Business KYB validation
-- Deterministic rule checks for missing documents, field presence, format validation, and cross-document consistency
+- Deterministic validation rules for missing documents, field presence, format checks, and cross-document consistency
 - JSON and Markdown reports
 - SQLite audit persistence
-- Optional vLLM-generated report explanations
+- vLLM-generated conversational intake and optional report explanations
 
-The LLM does not decide compliance outcomes. Status, missing documents, issues, and human escalation are decided by deterministic validation rules.
+Important: deterministic rules still decide status, missing documents, validation issues, and human escalation. The LLM powers conversation and extraction of the user’s intent; it does not override compliance decisions.
 
 ## Project Layout
 
 ```text
 .
 ├── app.py                         # CLI entrypoint
-├── notebook_demo.py               # Notebook-friendly demo helper
+├── notebook_demo.py               # Notebook-friendly scripted demo helper
 ├── amd_jupyter_smoke_test.py      # Environment and workflow smoke test
-├── config.py                      # Lightweight .env loader
 ├── agents/                        # Specialized workflow agents
-├── cli/                           # Interactive CLI prompts
+├── cli/                           # LLM conversational CLI loop
 ├── db/                            # SQLite persistence agent
 ├── demo_data/                     # Scripted hackathon demo documents
 ├── document_processing/           # Intake, classification, extraction
-├── llm/                           # Optional vLLM client
+├── llm/                           # vLLM/OpenAI-compatible client
 ├── mcp_server/                    # Mock MCP catalogue and client
 ├── orchestrator/                  # Workflow orchestration and trace
 ├── rules/                         # Claim, KYC, and KYB validation rules
@@ -39,43 +40,81 @@ The LLM does not decide compliance outcomes. Status, missing documents, issues, 
 
 ## Requirements
 
-Minimum:
+Minimum for scripted demos:
 
 - Python 3.10+
+
+Required for conversational CLI:
+
+- vLLM server exposing an OpenAI-compatible API
+- A served model name available from that vLLM server
 
 Optional:
 
 - `pydantic` for stricter message models
 - `pypdf` for text PDF extraction
 - `tesseract` system binary for image OCR
-- vLLM running with an OpenAI-compatible API for LLM explanations
 
-The deterministic demo runs with the Python standard library only.
-
-## Setup
-
-From the project root:
-
-```bash
-python3 --version
-python3 app.py --demo all
-```
-
-Optional Python packages:
+Install optional Python packages:
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-## Run The CLI
+## vLLM Configuration
 
-Interactive mode:
+The AMD Jupyter environment does not need a `.env` file. Pass vLLM settings directly to the CLI.
 
-```bash
-python3 app.py
+Default endpoint assumptions:
+
+```text
+base URL: http://localhost:8000/v1
+model: amd-hackathon-model
+API key: EMPTY
 ```
 
-Scripted demo mode:
+Override them with flags:
+
+```bash
+python3 app.py \
+  --use-llm \
+  --vllm-base-url http://localhost:8000/v1 \
+  --vllm-model <served-model-name> \
+  --vllm-api-key EMPTY
+```
+
+The app calls:
+
+```text
+{vllm-base-url}/chat/completions
+```
+
+## Run The Conversational CLI
+
+Start vLLM first, then run:
+
+```bash
+python3 app.py --use-llm --vllm-model <served-model-name>
+```
+
+Example conversation:
+
+```text
+Assistant: What kind of insurance operation do you want to process?
+You: I am a business user and I need to validate a property damage claim.
+Assistant: Please share the document file paths for the claim packet.
+You: demo_data/business_property_claim/claim_form.txt demo_data/business_property_claim/policy_copy.txt demo_data/business_property_claim/incident_report.txt
+```
+
+The assistant will generate a structured report after it has enough information.
+
+You can type `exit`, `quit`, or `bye` to leave the CLI.
+
+## Scripted Demo Mode
+
+Scripted demos do not require vLLM. They are useful for judging, CI, and quick verification.
+
+Run all demos:
 
 ```bash
 python3 app.py --demo all
@@ -99,6 +138,14 @@ Demo scenarios:
 - `4`: Business KYB missing `beneficial_ownership_declaration`
 - `5`: Individual KYC with name mismatch
 
+To include optional vLLM report explanations in demo mode:
+
+```bash
+python3 app.py --demo all --use-llm --vllm-model <served-model-name>
+```
+
+## Outputs
+
 Reports are written to:
 
 ```text
@@ -111,11 +158,11 @@ SQLite audit data is written to:
 outputs/insurance_assistant.sqlite3
 ```
 
-`outputs/` is intentionally ignored by git.
+`outputs/` is ignored by git.
 
 ## Run In AMD Jupyter
 
-In a notebook cell:
+Scripted notebook demo:
 
 ```python
 from notebook_demo import run_demo
@@ -124,11 +171,19 @@ reports = run_demo("all")
 reports[0].json_report
 ```
 
-Run one scenario:
+Notebook demo with vLLM explanations:
 
 ```python
-reports = run_demo("4")
-reports[0].markdown_report
+from notebook_demo import run_demo
+
+reports = run_demo(
+    "all",
+    use_llm=True,
+    vllm_base_url="http://localhost:8000/v1",
+    vllm_model="<served-model-name>",
+    vllm_api_key="EMPTY",
+)
+reports[0].json_report.get("llm_explanation")
 ```
 
 Environment smoke test:
@@ -137,55 +192,20 @@ Environment smoke test:
 python3 amd_jupyter_smoke_test.py
 ```
 
-The smoke test prints Python/platform details, checks whether PyTorch ROCm is visible, checks whether a vLLM endpoint is reachable, then runs all deterministic demos.
-
-## Configure vLLM With `.env`
-
-Copy the example file:
+Smoke test with vLLM:
 
 ```bash
-cp .env.example .env
+python3 amd_jupyter_smoke_test.py --use-llm --vllm-model <served-model-name>
 ```
 
-Edit `.env`:
-
-```dotenv
-VLLM_BASE_URL=http://localhost:8000/v1
-VLLM_MODEL=<served-model-name>
-VLLM_API_KEY=EMPTY
-VLLM_TIMEOUT_SECONDS=20
-INSURANCE_USE_LLM=1
-```
-
-Then run:
-
-```bash
-python3 app.py --demo all --use-llm
-```
-
-Or from a notebook:
-
-```python
-from notebook_demo import run_demo
-
-reports = run_demo("all", use_llm=True)
-reports[0].json_report.get("llm_explanation")
-```
-
-The app expects vLLM to expose an OpenAI-compatible endpoint at:
-
-```text
-{VLLM_BASE_URL}/chat/completions
-```
-
-If vLLM is not reachable, the app still completes the deterministic workflow and simply omits the LLM explanation.
+The smoke test prints Python/platform details, checks whether PyTorch ROCm is visible, checks whether the vLLM endpoint is reachable, then runs all scripted demos.
 
 ## Validate Before Push
 
 Run these commands before committing:
 
 ```bash
-python3 -m py_compile config.py app.py notebook_demo.py amd_jupyter_smoke_test.py llm/*.py agents/*.py orchestrator/*.py schemas/messages.py document_processing/*.py rules/*.py mcp_server/*.py db/database.py tests/test_demo_workflows.py
+python3 -m py_compile app.py notebook_demo.py amd_jupyter_smoke_test.py cli/*.py llm/*.py agents/*.py orchestrator/*.py schemas/messages.py document_processing/*.py rules/*.py mcp_server/*.py db/database.py tests/test_demo_workflows.py
 python3 app.py --demo all
 python3 -m unittest discover -s tests
 python3 amd_jupyter_smoke_test.py
@@ -193,20 +213,20 @@ python3 amd_jupyter_smoke_test.py
 
 Expected result:
 
-- All five demos complete
+- All five scripted demos complete
 - Unit tests pass
 - Smoke test generates five reports
-- No `.env`, `outputs/`, `__pycache__/`, or notebook checkpoint files are included in git
+- Generated `outputs/`, `__pycache__/`, and notebook checkpoint files are not committed
 
 ## Git Hygiene
 
-The repository is configured to ignore generated and local-only files:
+The repository ignores generated and local-only files:
 
-- `.env`
 - `outputs/`
 - `__pycache__/`
 - `*.pyc`
 - `.ipynb_checkpoints/`
 - `.venv/`
+- `.env`
 
-Commit source files, demo data, tests, `.env.example`, and this README. Do not commit real credentials, generated reports, SQLite output, or local notebook checkpoints.
+Commit source files, demo data, tests, and this README. Do not commit generated reports, SQLite output, credentials, virtual environments, or notebook checkpoints.
