@@ -1,0 +1,4 @@
+Policy Copy
+Insured Company: Acme Components Pvt Ltd
+Policy Number: BUS-PROP-7788
+Sum Insured: INR 10000000

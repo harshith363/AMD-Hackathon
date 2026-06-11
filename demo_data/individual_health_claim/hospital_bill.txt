@@ -1,0 +1,5 @@
+Hospital Bill
+Patient Name: Priya Sharma
+Policy Number: IND-HLT-5501
+Total Bill: INR 98000
+Invoice Number: HSP-2026-1099

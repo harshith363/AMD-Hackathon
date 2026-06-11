@@ -1,0 +1,4 @@
+Bank Account Proof
+Account Holder: Acme Components Pvt Ltd
+Bank Account: 1234567890
+IFSC: HDFC0001234

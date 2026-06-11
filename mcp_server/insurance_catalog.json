@@ -1,0 +1,122 @@
+[
+  {
+    "scheme_id": "BUS-PROP-001",
+    "customer_type": "business",
+    "category": "property",
+    "scheme_name": "Commercial Property Protect Plus",
+    "description": "Covers commercial property against fire, burglary, natural disaster, and business interruption.",
+    "eligibility": {"business_age_months": 6, "property_use": "commercial"},
+    "coverage_highlights": ["Fire and allied perils", "Burglary", "Natural disaster", "Business interruption"],
+    "required_documents": ["certificate_of_incorporation", "property_ownership_or_lease", "fire_safety_certificate", "latest_utility_bill"],
+    "claim_types_supported": ["property_damage"],
+    "recommended_next_step": "Schedule a property risk inspection and submit ownership or lease documents."
+  },
+  {
+    "scheme_id": "BUS-LIFE-001",
+    "customer_type": "business",
+    "category": "employee_life",
+    "scheme_name": "Group Term Life Secure",
+    "description": "Group life cover for employees with nominee support and accidental death options.",
+    "eligibility": {"minimum_employees": 5},
+    "coverage_highlights": ["Group term cover", "Accidental death benefit", "Nominee assistance"],
+    "required_documents": ["employee_census", "company_pan", "board_resolution"],
+    "claim_types_supported": ["employee_life"],
+    "recommended_next_step": "Upload employee census and choose sum assured bands."
+  },
+  {
+    "scheme_id": "BUS-HEALTH-001",
+    "customer_type": "business",
+    "category": "employee_health",
+    "scheme_name": "Team Health Advantage",
+    "description": "Cashless group health insurance for employees and dependents.",
+    "eligibility": {"minimum_employees": 3},
+    "coverage_highlights": ["Cashless hospitalization", "Maternity options", "Pre-existing disease waiting period waiver options"],
+    "required_documents": ["employee_census", "company_pan", "gst_certificate"],
+    "claim_types_supported": ["employee_health"],
+    "recommended_next_step": "Share employee census with ages and dependent details."
+  },
+  {
+    "scheme_id": "BUS-PLI-001",
+    "customer_type": "business",
+    "category": "professional_liability",
+    "scheme_name": "Professional Liability Shield",
+    "description": "Protects firms against covered professional negligence and client claims.",
+    "eligibility": {"professional_services": true},
+    "coverage_highlights": ["Defense costs", "Errors and omissions", "Client claim settlement support"],
+    "required_documents": ["certificate_of_incorporation", "service_contract_samples", "revenue_declaration"],
+    "claim_types_supported": ["professional_liability"],
+    "recommended_next_step": "Submit service profile, annual revenue, and past claim declaration."
+  },
+  {
+    "scheme_id": "IND-HEALTH-001",
+    "customer_type": "individual",
+    "category": "health",
+    "scheme_name": "Health Assure Smart",
+    "description": "Individual and family floater medical insurance with cashless hospital access.",
+    "eligibility": {"age_min": 18, "age_max": 65},
+    "coverage_highlights": ["Cashless network", "Pre and post hospitalization", "Annual health checkup"],
+    "required_documents": ["pan", "address_proof", "medical_declaration"],
+    "claim_types_supported": ["health"],
+    "recommended_next_step": "Complete medical declaration and choose deductible."
+  },
+  {
+    "scheme_id": "IND-LIFE-001",
+    "customer_type": "individual",
+    "category": "life",
+    "scheme_name": "Life Cover Prime",
+    "description": "Term life insurance with flexible premium modes.",
+    "eligibility": {"age_min": 18, "age_max": 60},
+    "coverage_highlights": ["High sum assured", "Critical illness rider", "Accidental death rider"],
+    "required_documents": ["pan", "identity_proof", "income_proof"],
+    "claim_types_supported": ["life"],
+    "recommended_next_step": "Complete income and nominee details."
+  },
+  {
+    "scheme_id": "IND-MOTOR-001",
+    "customer_type": "individual",
+    "category": "motor",
+    "scheme_name": "Motor Guard Comprehensive",
+    "description": "Own damage and third-party cover for private vehicles.",
+    "eligibility": {"vehicle_type": "private"},
+    "coverage_highlights": ["Own damage", "Third-party liability", "Zero depreciation add-on"],
+    "required_documents": ["registration_certificate", "driving_license", "previous_policy"],
+    "claim_types_supported": ["motor"],
+    "recommended_next_step": "Provide registration certificate and previous policy details."
+  },
+  {
+    "scheme_id": "IND-TRAVEL-001",
+    "customer_type": "individual",
+    "category": "travel",
+    "scheme_name": "Travel Safe Global",
+    "description": "Travel medical, baggage, and trip interruption cover.",
+    "eligibility": {"trip_type": "domestic_or_international"},
+    "coverage_highlights": ["Emergency medical", "Baggage delay", "Trip cancellation"],
+    "required_documents": ["passport_or_identity_proof", "travel_itinerary"],
+    "claim_types_supported": ["travel"],
+    "recommended_next_step": "Share travel dates, destination, and passenger ages."
+  },
+  {
+    "scheme_id": "IND-HOME-001",
+    "customer_type": "individual",
+    "category": "home",
+    "scheme_name": "Home Protect Essential",
+    "description": "Home building and contents cover for owners and tenants.",
+    "eligibility": {"residence": "owned_or_rented"},
+    "coverage_highlights": ["Fire", "Burglary", "Natural calamity", "Contents protection"],
+    "required_documents": ["address_proof", "ownership_or_rent_agreement", "contents_declaration"],
+    "claim_types_supported": ["home"],
+    "recommended_next_step": "Declare home contents and upload ownership or rental proof."
+  },
+  {
+    "scheme_id": "IND-PA-001",
+    "customer_type": "individual",
+    "category": "personal_accident",
+    "scheme_name": "Accident Secure 24x7",
+    "description": "Accidental death, disability, and income protection benefits.",
+    "eligibility": {"age_min": 18, "age_max": 70},
+    "coverage_highlights": ["Accidental death", "Permanent disability", "Weekly benefit"],
+    "required_documents": ["pan", "identity_proof", "occupation_declaration"],
+    "claim_types_supported": ["personal_accident"],
+    "recommended_next_step": "Confirm occupation and preferred sum insured."
+  }
+]

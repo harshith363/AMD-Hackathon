@@ -1,0 +1,4 @@
+GST Certificate
+Company Name: Acme Components Pvt Ltd
+GSTIN: 27AABCA1234F1Z5
+Registered Address: 42 Industrial Estate, Pune

@@ -1,0 +1,5 @@
+Claim Form
+Customer Name: Priya Sharma
+Patient Name: Priya Sharma
+Policy Number: IND-HLT-5501
+Claim Amount: INR 98000
