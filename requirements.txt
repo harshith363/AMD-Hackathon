@@ -1,3 +1,4 @@
-streamlit>=1.35
+# Install Streamlit separately in the AMD default ROCm+vLLM image.
+# See README.md for the blinker-safe install command.
 pydantic>=2.0
 pypdf>=4.0

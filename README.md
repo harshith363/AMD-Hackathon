@@ -45,11 +45,19 @@ tests/                Unit tests
 For the default ROCm + vLLM Docker image, the hackathon FAQ recommends:
 
 ```bash
-pip install streamlit --ignore-installed blinker
-pip install "starlette<0.49.0" "protobuf<7.0.0" "numpy<2.3"
+python3.12 -m pip install --ignore-installed blinker streamlit
+python3.12 -m pip install "starlette<0.49.0" "protobuf<7.0.0" "numpy<2.3"
 ```
 
 These commands were specifically tested against the default Docker image. Avoid uninstalling unrelated dependencies.
+
+Do not install Streamlit through `pip install -r requirements.txt` in the AMD default image. The base image has a distutils-installed `blinker 1.4`, and a normal Streamlit install can fail while trying to uninstall it. The `--ignore-installed blinker` command above avoids that.
+
+Optional backend packages:
+
+```bash
+python3.12 -m pip install -r requirements.txt
+```
 
 ## 2. Serve The vLLM Model
 
