@@ -84,11 +84,15 @@ Run this in another terminal from the project root:
 
 ```bash
 streamlit run streamlit_app.py \
+  --server.address 0.0.0.0 \
   --server.port 8501 \
+  --server.baseUrlPath proxy/8501 \
   --server.headless true \
   --server.enableCORS false \
   --server.enableXsrfProtection false
 ```
+
+The `--server.baseUrlPath proxy/8501` flag is important in the AMD notebook proxy. Without it, the HTML page may load but CSS, fonts, and JavaScript can be requested from `/proxy/static/...` instead of `/proxy/8501/static/...`, which produces a blank page.
 
 ## 4. Open The App
 
@@ -112,15 +116,7 @@ https://notebooks.amd.com/jupyter-hack-team-5000-260609205410-931e891d/proxy/850
 
 ## 5. Use The App
 
-In the Streamlit sidebar, keep:
-
-```text
-Base URL: http://localhost:8000/v1
-Model: Qwen/Qwen2.5-32B-Instruct
-API key: EMPTY
-```
-
-Then chat naturally:
+The app opens as a centered GPT-style chat. Chat naturally:
 
 ```text
 I am an individual
@@ -131,7 +127,17 @@ My name is Harshith
 yes
 ```
 
-For document workflows, either type local file paths in chat or upload files through the document uploader panel. Uploaded files are stored under `outputs/uploads/` and passed into the same document validation agents.
+When the assistant needs a structured choice, such as customer type, workflow, insurance category, or claim type, the app shows horizontal option cards. Click a card, then press `Enter`. You can also keep typing free-form text in the chat input.
+
+For document workflows, either type local file paths in chat or upload files through the inline document uploader when it appears. Uploaded files are stored under `outputs/uploads/` and passed into the same document validation agents.
+
+The Streamlit app uses these built-in vLLM defaults:
+
+```text
+Base URL: http://localhost:8000/v1
+Model: Qwen/Qwen2.5-32B-Instruct
+API key: EMPTY
+```
 
 ## 6. Tool-Backed Conversation
 
