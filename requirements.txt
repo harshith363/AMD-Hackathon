@@ -1,5 +1,3 @@
-# The deterministic demo runs with the Python standard library only.
-# Install these optional packages when the notebook image does not already
-# provide them and you want richer validation/PDF handling.
+streamlit>=1.35
 pydantic>=2.0
 pypdf>=4.0

@@ -46,7 +46,7 @@ class VLLMClient:
         prompt = (
             "Write a concise insurance operations explanation for this validation or "
             "recommendation report. Do not change the deterministic status or missing "
-            "documents. Keep it suitable for a hackathon CLI demo.\n\n"
+            "documents. Keep it suitable for a hackathon application.\n\n"
             f"{json.dumps(_compact_report(report), indent=2)}"
         )
         try:

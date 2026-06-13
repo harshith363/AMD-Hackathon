@@ -1,6 +1,6 @@
 """Mock MCP-style catalogue server facade.
 
-The hackathon demo keeps the catalogue local, while the client functions mimic
+The hackathon app keeps the catalogue local, while the client functions mimic
 the boundary a real MCP server would expose.
 """
 

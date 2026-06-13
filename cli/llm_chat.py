@@ -25,32 +25,95 @@ def run_llm_interactive(orchestrator: WorkflowOrchestrator, print_summary) -> No
     transcript: list[dict[str, str]] = []
 
     while True:
-        missing = _missing_fields(collected)
-        if not missing and collected.get("ready_to_run"):
-            report = _run_collected_workflow(orchestrator, collected)
-            print_summary(report)
+        question = next_assistant_question(orchestrator, collected)
+        if not question:
+            report = run_ready_workflow(orchestrator, collected)
+            if report:
+                print_summary(report)
+                collected = _empty_intake()
+                transcript = []
+                print()
+                print("What would you like to process next?")
+                continue
+
+        print(f"\nAssistant: {question}")
+        user_text = input("You: ").strip()
+        result = process_user_message(orchestrator, collected, transcript, user_text)
+        if result["exit_requested"]:
+            return
+        for message in result["assistant_messages"]:
+            print(f"Assistant: {message}")
+        collected = result["collected"]
+        transcript = result["transcript"]
+        if result["report"]:
+            print_summary(result["report"])
             collected = _empty_intake()
             transcript = []
             print()
             print("What would you like to process next?")
-            continue
 
-        question = client.ask_intake_question(collected, missing) or _fallback_question(missing)
-        print(f"\nAssistant: {question}")
-        user_text = input("You: ").strip()
-        if user_text.lower() in {"exit", "quit", "bye"}:
-            return
-        if _is_clarification_question(user_text, missing):
-            answer = _answer_clarification(client, user_text, collected, missing)
-            print(f"Assistant: {answer}")
-            continue
-        transcript.append({"role": "user", "content": user_text})
-        extracted = client.extract_intake(transcript, collected, _domain_context(collected))
-        if not extracted:
-            print("Assistant: I could not parse that cleanly. Please rephrase with the case type, workflow, or file paths.")
-            continue
-        collected = _merge_intake(collected, extracted)
-        collected = _normalize_intake(collected)
+
+def next_assistant_question(orchestrator: WorkflowOrchestrator, collected: dict[str, Any]) -> str | None:
+    missing = _missing_fields(collected)
+    if not missing and collected.get("ready_to_run"):
+        return None
+    return orchestrator.llm_client.ask_intake_question(collected, missing) or _fallback_question(missing)
+
+
+def process_user_message(
+    orchestrator: WorkflowOrchestrator,
+    collected: dict[str, Any],
+    transcript: list[dict[str, str]],
+    user_text: str,
+) -> dict[str, Any]:
+    client = orchestrator.llm_client
+    if user_text.lower() in {"exit", "quit", "bye"}:
+        return {
+            "exit_requested": True,
+            "assistant_messages": [],
+            "collected": collected,
+            "transcript": transcript,
+            "report": None,
+        }
+
+    missing = _missing_fields(collected)
+    if _is_clarification_question(user_text, missing):
+        answer = _answer_clarification(client, user_text, collected, missing)
+        return {
+            "exit_requested": False,
+            "assistant_messages": [answer],
+            "collected": collected,
+            "transcript": transcript,
+            "report": None,
+        }
+
+    updated_transcript = [*transcript, {"role": "user", "content": user_text}]
+    extracted = client.extract_intake(updated_transcript, collected, _domain_context(collected))
+    if not extracted:
+        return {
+            "exit_requested": False,
+            "assistant_messages": ["I could not parse that cleanly. Please rephrase with the case type, workflow, or file paths."],
+            "collected": collected,
+            "transcript": updated_transcript,
+            "report": None,
+        }
+
+    updated_collected = _normalize_intake(_merge_intake(collected, extracted))
+    report = run_ready_workflow(orchestrator, updated_collected)
+    return {
+        "exit_requested": False,
+        "assistant_messages": [],
+        "collected": updated_collected,
+        "transcript": updated_transcript,
+        "report": report,
+    }
+
+
+def run_ready_workflow(orchestrator: WorkflowOrchestrator, collected: dict[str, Any]):
+    missing = _missing_fields(collected)
+    if missing or not collected.get("ready_to_run"):
+        return None
+    return _run_collected_workflow(orchestrator, collected)
 
 
 def _empty_intake() -> dict[str, Any]:

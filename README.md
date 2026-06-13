@@ -1,29 +1,133 @@
 # Agentic Insurance Operations Assistant
 
-LLM-powered CLI and notebook-friendly prototype for insurance operations. It was built for an AMD Jupyter cloud hackathon environment with ROCm/vLLM support.
+Interactive Streamlit app for insurance operations, built for the AMD Jupyter hackathon environment. The app uses vLLM for conversation and local Python tools/agents for insurance business logic.
 
-The interactive CLI is conversational: it does not show numbered workflow menus. The LLM asks the user questions, extracts the user’s typed answers into structured messages, and then routes the case through the agent workflow.
+## What It Does
 
-Capabilities and menu-like options are not hardcoded into LLM prompts. They come from local domain tools, and the LLM turns those tool results into natural language.
+- Supports `individual` and `business` users.
+- Finds new insurance products from a mock MCP-style catalogue.
+- Validates claim document packets.
+- Validates individual KYC and business KYB document packets.
+- Uses local domain tools for supported workflows, insurance categories, claim types, and required documents.
+- Uses deterministic rules for missing documents, field checks, consistency checks, status, and human-review decisions.
+- Saves JSON and Markdown reports under `outputs/reports/`.
+- Saves audit records in SQLite under `outputs/insurance_assistant.sqlite3`.
 
-The app supports:
+The LLM handles conversation and reasoning over tool results. It does not own the business rules or validation status.
 
-- Business and individual user journeys
-- Insurance product discovery through a mock MCP-style catalogue
-- Claim document validation
-- Individual KYC validation
-- Business KYB validation
-- Deterministic validation rules for missing documents, field presence, format checks, and cross-document consistency
-- Tool-backed discovery of supported workflows, insurance categories, claim types, and required documents
-- JSON and Markdown reports
-- SQLite audit persistence
-- vLLM-generated conversational intake and optional report explanations
+## Architecture
 
-Important: deterministic rules still decide status, missing documents, validation issues, and human escalation. The LLM powers conversation and extraction of the user’s intent; it does not override compliance decisions.
+```text
+Streamlit UI
+  -> vLLM chat endpoint
+  -> Domain tools
+  -> Structured messages
+  -> Workflow orchestrator
+  -> Specialized agents
+  -> Reports + SQLite
+```
 
-## Tool-Backed Conversation
+Key folders:
 
-When the user asks a clarification question like `give me options`, the CLI invokes local domain tools:
+```text
+agents/               Specialized workflow agents
+cli/                  Shared conversational intake logic
+domain_tools/         Tool functions for workflows, categories, claims, documents
+mcp_server/           Mock MCP product catalogue
+rules/                Claim, KYC, and KYB validation rules
+schemas/              Structured message models
+sample_data/          Sample document packets used by tests
+tests/                Unit tests
+```
+
+## 1. Install Streamlit In AMD Jupyter
+
+For the default ROCm + vLLM Docker image, the hackathon FAQ recommends:
+
+```bash
+pip install streamlit --ignore-installed blinker
+pip install "starlette<0.49.0" "protobuf<7.0.0" "numpy<2.3"
+```
+
+These commands were specifically tested against the default Docker image. Avoid uninstalling unrelated dependencies.
+
+## 2. Serve The vLLM Model
+
+Run this in one terminal:
+
+```bash
+vllm serve Qwen/Qwen2.5-32B-Instruct \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --dtype bfloat16 \
+  --max-model-len 4096 \
+  --gpu-memory-utilization 0.92
+```
+
+Optional health check from another terminal:
+
+```bash
+curl http://localhost:8000/v1/models
+```
+
+## 3. Start The Streamlit App
+
+Run this in another terminal from the project root:
+
+```bash
+streamlit run streamlit_app.py \
+  --server.port 8501 \
+  --server.headless true \
+  --server.enableCORS false \
+  --server.enableXsrfProtection false
+```
+
+## 4. Open The App
+
+If your notebook URL is:
+
+```text
+https://notebooks.amd.com/<pod-name>/lab
+```
+
+open:
+
+```text
+https://notebooks.amd.com/<pod-name>/proxy/8501/
+```
+
+Example:
+
+```text
+https://notebooks.amd.com/jupyter-hack-team-5000-260609205410-931e891d/proxy/8501/
+```
+
+## 5. Use The App
+
+In the Streamlit sidebar, keep:
+
+```text
+Base URL: http://localhost:8000/v1
+Model: Qwen/Qwen2.5-32B-Instruct
+API key: EMPTY
+```
+
+Then chat naturally:
+
+```text
+I am an individual
+give me options
+I want a new policy
+health
+My name is Harshith
+yes
+```
+
+For document workflows, either type local file paths in chat or upload files through the document uploader panel. Uploaded files are stored under `outputs/uploads/` and passed into the same document validation agents.
+
+## 6. Tool-Backed Conversation
+
+When the user asks something like `give me options`, the app invokes local domain tools:
 
 ```text
 get_supported_workflows(customer_type)
@@ -32,212 +136,37 @@ get_claim_types(customer_type)
 get_required_documents(customer_type, workflow_type, case_type)
 ```
 
-The tool result is then sent to vLLM so the model can phrase a helpful answer. This keeps business logic in Python modules and lets the LLM focus on reasoning, wording, and conversational flow.
+The tool result is passed to vLLM so the model can phrase a helpful answer. This keeps insurance logic out of prompts and inside Python modules.
 
-## Project Layout
+## 7. Optional CLI Mode
 
-```text
-.
-├── app.py                         # CLI entrypoint
-├── notebook_demo.py               # Notebook-friendly scripted demo helper
-├── amd_jupyter_smoke_test.py      # Environment and workflow smoke test
-├── agents/                        # Specialized workflow agents
-├── cli/                           # LLM conversational CLI loop
-├── db/                            # SQLite persistence agent
-├── demo_data/                     # Scripted hackathon demo documents
-├── domain_tools/                  # Tool functions for workflows, categories, claims, and documents
-├── document_processing/           # Intake, classification, extraction
-├── llm/                           # vLLM/OpenAI-compatible client
-├── mcp_server/                    # Mock MCP catalogue and client
-├── orchestrator/                  # Workflow orchestration and trace
-├── rules/                         # Claim, KYC, and KYB validation rules
-├── schemas/                       # Structured inter-agent messages
-└── tests/                         # Unit tests for demo workflows
-```
-
-## Requirements
-
-Minimum for scripted demos:
-
-- Python 3.10+
-
-Required for conversational CLI:
-
-- vLLM server exposing an OpenAI-compatible API
-- A served model name available from that vLLM server
-
-Optional:
-
-- `pydantic` for stricter message models
-- `pypdf` for text PDF extraction
-- `tesseract` system binary for image OCR
-
-Install optional Python packages:
-
-```bash
-python3 -m pip install -r requirements.txt
-```
-
-## vLLM Configuration
-
-The AMD Jupyter environment does not need a `.env` file. Pass vLLM settings directly to the CLI.
-
-Default endpoint assumptions:
-
-```text
-base URL: http://localhost:8000/v1
-model: amd-hackathon-model
-API key: EMPTY
-```
-
-Override them with flags:
+The Streamlit app is the recommended interface. A terminal chat interface is also available:
 
 ```bash
 python3 app.py \
   --use-llm \
   --vllm-base-url http://localhost:8000/v1 \
-  --vllm-model <served-model-name> \
+  --vllm-model Qwen/Qwen2.5-32B-Instruct \
   --vllm-api-key EMPTY
 ```
 
-The app calls:
+## 8. Validation Before Push
 
-```text
-{vllm-base-url}/chat/completions
-```
-
-## Run The Conversational CLI
-
-Start vLLM first, then run:
+Run:
 
 ```bash
-python3 app.py --use-llm --vllm-model <served-model-name>
-```
-
-Example conversation:
-
-```text
-Assistant: What kind of insurance operation do you want to process?
-You: I am a business user and I need to validate a property damage claim.
-Assistant: Please share the document file paths for the claim packet.
-You: demo_data/business_property_claim/claim_form.txt demo_data/business_property_claim/policy_copy.txt demo_data/business_property_claim/incident_report.txt
-```
-
-The assistant will generate a structured report after it has enough information.
-
-You can type `exit`, `quit`, or `bye` to leave the CLI.
-
-## Scripted Demo Mode
-
-Scripted demos do not require vLLM. They are useful for judging, CI, and quick verification.
-
-Run all demos:
-
-```bash
-python3 app.py --demo all
-```
-
-Run a single demo:
-
-```bash
-python3 app.py --demo 1
-python3 app.py --demo 2
-python3 app.py --demo 3
-python3 app.py --demo 4
-python3 app.py --demo 5
-```
-
-Demo scenarios:
-
-- `1`: Business property insurance discovery
-- `2`: Business property damage claim missing `repair_estimate`
-- `3`: Individual health claim missing `discharge_summary`
-- `4`: Business KYB missing `beneficial_ownership_declaration`
-- `5`: Individual KYC with name mismatch
-
-To include optional vLLM report explanations in demo mode:
-
-```bash
-python3 app.py --demo all --use-llm --vllm-model <served-model-name>
-```
-
-## Outputs
-
-Reports are written to:
-
-```text
-outputs/reports/
-```
-
-SQLite audit data is written to:
-
-```text
-outputs/insurance_assistant.sqlite3
-```
-
-`outputs/` is ignored by git.
-
-## Run In AMD Jupyter
-
-Scripted notebook demo:
-
-```python
-from notebook_demo import run_demo
-
-reports = run_demo("all")
-reports[0].json_report
-```
-
-Notebook demo with vLLM explanations:
-
-```python
-from notebook_demo import run_demo
-
-reports = run_demo(
-    "all",
-    use_llm=True,
-    vllm_base_url="http://localhost:8000/v1",
-    vllm_model="<served-model-name>",
-    vllm_api_key="EMPTY",
-)
-reports[0].json_report.get("llm_explanation")
-```
-
-Environment smoke test:
-
-```bash
-python3 amd_jupyter_smoke_test.py
-```
-
-Smoke test with vLLM:
-
-```bash
-python3 amd_jupyter_smoke_test.py --use-llm --vllm-model <served-model-name>
-```
-
-The smoke test prints Python/platform details, checks whether PyTorch ROCm is visible, checks whether the vLLM endpoint is reachable, then runs all scripted demos.
-
-## Validate Before Push
-
-Run these commands before committing:
-
-```bash
-python3 -m py_compile app.py notebook_demo.py amd_jupyter_smoke_test.py cli/*.py llm/*.py agents/*.py orchestrator/*.py schemas/messages.py document_processing/*.py rules/*.py mcp_server/*.py db/database.py tests/test_demo_workflows.py
-python3 app.py --demo all
+python3 -m py_compile app.py streamlit_app.py cli/*.py domain_tools/*.py llm/*.py agents/*.py orchestrator/*.py schemas/messages.py document_processing/*.py rules/*.py mcp_server/*.py db/database.py tests/*.py
 python3 -m unittest discover -s tests
-python3 amd_jupyter_smoke_test.py
 ```
 
-Expected result:
+Expected:
 
-- All five scripted demos complete
-- Unit tests pass
-- Smoke test generates five reports
-- Generated `outputs/`, `__pycache__/`, and notebook checkpoint files are not committed
+- Compile succeeds.
+- Unit tests pass.
 
-## Git Hygiene
+## 9. Git Hygiene
 
-The repository ignores generated and local-only files:
+Ignored generated/local files:
 
 - `outputs/`
 - `__pycache__/`
@@ -246,4 +175,4 @@ The repository ignores generated and local-only files:
 - `.venv/`
 - `.env`
 
-Commit source files, demo data, tests, and this README. Do not commit generated reports, SQLite output, credentials, virtual environments, or notebook checkpoints.
+Commit source files, sample data, tests, and this README. Do not commit generated reports, SQLite output, uploaded files, credentials, virtual environments, or notebook checkpoints.
