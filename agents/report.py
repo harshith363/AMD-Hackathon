@@ -41,6 +41,7 @@ class ReportAgent:
             "validation_issues": validation.issues,
             "extracted_key_fields": extraction.extracted_fields.get("canonical", {}),
             "extracted_by_document": _group_extracted_fields_by_document(extraction.extracted_fields.get("by_field", {})),
+            "document_debug": _document_debug_from_trace(trace),
             "user_inputs": user_inputs or {},
             "incident_description": incident_description,
             "evidence": extraction.evidence,
@@ -120,6 +121,13 @@ def _group_extracted_fields_by_document(by_field: dict[str, Any]) -> dict[str, d
             document_type = item.get("document_type", "unknown")
             grouped.setdefault(document_type, {})[field_name] = item.get("value")
     return grouped
+
+
+def _document_debug_from_trace(trace: WorkflowTrace) -> list[dict[str, Any]]:
+    for item in reversed(trace.to_list()):
+        if item.get("agent") == "Document Intake Agent" and item.get("action") == "parsed_documents":
+            return item.get("details", {}).get("documents", [])
+    return []
 
 
 def _markdown_product_report(report: dict[str, Any]) -> str:

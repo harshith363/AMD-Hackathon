@@ -37,6 +37,9 @@ DOCUMENT_HINTS = {
 
 
 def classify_document(document: dict[str, Any]) -> dict[str, Any]:
+    if document.get("extraction_method") == "vision_llm" and document.get("document_type") != "unknown":
+        document["confidence"] = max(float(document.get("confidence", 0.5)), 0.88)
+        return document
     text = document.get("extracted_text", "").lower()
     file_name = document.get("file_name", "").lower().replace("-", "_").replace(" ", "_")
     file_stem = file_name.rsplit(".", 1)[0]

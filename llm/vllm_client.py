@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
+from pathlib import Path
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -149,9 +152,9 @@ class VLLMClient:
             return None
         prompt = (
             "Validate these individual insurance application details. Return JSON only with keys "
-            "is_valid, issues, and normalized_details. Check that address, phone_number, job, "
-            "and annual_income are plausible and present. Do not reject just because the details "
-            "are brief.\n\n"
+            "is_valid, issues, and normalized_details. Check that name, date_of_birth, address, "
+            "phone_number, job, and annual_income are plausible and present. Do not reject just "
+            "because the details are brief.\n\n"
             f"Details: {json.dumps(details, indent=2)}"
         )
         try:
@@ -206,6 +209,34 @@ class VLLMClient:
         except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
             return None
 
+    def extract_document_fields_from_file(self, path: Path) -> dict[str, Any] | None:
+        if not self.enabled or not path.exists():
+            return None
+        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if not (mime_type.startswith("image/") or mime_type == "application/pdf"):
+            return None
+        data_url = f"data:{mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        prompt = (
+            "Parse this Indian insurance/KYC document. Return JSON only. If a field is not visible, use null. "
+            "Use document_type as one of pan, identity_proof, address_proof, bank_proof, claim_form, "
+            "policy_copy, hospital_bill, discharge_summary, unknown. Extract these fields where visible: "
+            "customer_name, date_of_birth, pan_number, aadhaar_number, address, phone_number, "
+            "policy_number, patient_name, insured_name, claim_amount, incident_date.\n\n"
+            "Return shape: {\"document_type\":\"unknown\",\"fields\":{},\"summary\":\"\"}"
+        )
+        try:
+            content = self.chat_multimodal(
+                prompt,
+                data_url,
+                system="You are a precise document parsing engine. Return JSON only.",
+                max_tokens=420,
+                temperature=0.0,
+            )
+            parsed = _extract_json_object(content)
+            return parsed if isinstance(parsed, dict) else None
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
     def chat(
         self,
         prompt: str,
@@ -222,6 +253,43 @@ class VLLMClient:
                     "content": system,
                 },
                 {"role": "user", "content": prompt},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return data["choices"][0]["message"]["content"].strip()
+
+    def chat_multimodal(
+        self,
+        prompt: str,
+        data_url: str,
+        *,
+        system: str,
+        max_tokens: int = 420,
+        temperature: float = 0.0,
+    ) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {"type": "text", "text": prompt},
+                    ],
+                },
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,

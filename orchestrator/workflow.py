@@ -72,7 +72,7 @@ class WorkflowOrchestrator:
         )
         trace = WorkflowTrace(message.session_id)
         self.router.route(intent, trace)
-        parsed = self.document_intake.parse(message, trace)
+        parsed = self.document_intake.parse(message, trace, self.llm_client)
         classified = self.document_classifier.classify(parsed, trace)
         extracted = self.extraction.extract(classified, trace)
         reconciled = self.reconciliation.reconcile(extracted, trace)

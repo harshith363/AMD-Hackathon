@@ -1,6 +1,6 @@
 import unittest
 
-from cli.llm_chat import _answer_clarification, _empty_intake
+from cli.llm_chat import _answer_clarification, _empty_intake, _missing_fields
 
 
 class FakeClient:
@@ -36,6 +36,13 @@ class LLMChatClarificationTests(unittest.TestCase):
 
         self.assertIn("find new insurance", answer)
         self.assertIn("validate claim documents", answer)
+
+    def test_individual_user_details_are_requested_after_action(self):
+        collected = _empty_intake()
+        collected["customer_type"] = "individual"
+        collected["workflow_type"] = "claim_validation"
+
+        self.assertEqual(_missing_fields(collected), ["user details"])
 
 
 if __name__ == "__main__":

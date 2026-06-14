@@ -78,6 +78,23 @@ Optional health check from another terminal:
 curl http://localhost:8000/v1/models
 ```
 
+For PAN/Aadhaar image parsing, use a multimodal model. The app defaults to Gemma 4 E4B:
+
+```bash
+vllm serve google/gemma-4-E4B-it \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --dtype bfloat16 \
+  --max-model-len 32768 \
+  --gpu-memory-utilization 0.95 \
+  --enable-auto-tool-choice \
+  --tool-call-parser gemma4 \
+  --reasoning-parser gemma4 \
+  --trust-remote-code
+```
+
+Google's Gemma 4 docs list text and image input support, including OCR and document/PDF parsing. The smaller E4B instruction-tuned model is a practical default for the hackathon environment; use `google/gemma-4-12B-it`, `google/gemma-4-26B-A4B-it`, or `google/gemma-4-31B-it` only if your GPU memory allows it.
+
 ## 3. Start The Streamlit App
 
 Run this in another terminal from the project root:

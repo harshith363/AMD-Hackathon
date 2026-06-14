@@ -11,6 +11,8 @@ from domain_tools import (
 from orchestrator.workflow import WorkflowOrchestrator
 from schemas.messages import DocumentPacketMessage, ProductDiscoveryMessage
 
+REQUIRED_INDIVIDUAL_USER_FIELDS = ["name", "date_of_birth", "address", "phone_number", "job", "annual_income"]
+
 
 def run_llm_interactive(orchestrator: WorkflowOrchestrator, print_summary) -> None:
     client = orchestrator.llm_client
@@ -136,10 +138,17 @@ def _missing_fields(collected: dict[str, Any]) -> list[str]:
     if not collected.get("workflow_type"):
         missing.append("workflow_type")
     workflow = collected.get("workflow_type")
+    if (
+        collected.get("customer_type") == "individual"
+        and workflow in {"new_insurance", "claim_validation", "kyc_validation"}
+        and not _has_required_individual_user_details(collected.get("user_inputs", {}))
+    ):
+        missing.append("user details")
+        return missing
     if workflow == "new_insurance":
         if not collected.get("insurance_category"):
             missing.append("insurance_category")
-        if not collected.get("user_inputs"):
+        if collected.get("customer_type") == "business" and not collected.get("user_inputs"):
             missing.append("basic customer or business details")
         if not collected.get("ready_to_run"):
             missing.append("confirmation to run product discovery")
@@ -155,6 +164,10 @@ def _missing_fields(collected: dict[str, Any]) -> list[str]:
         if not collected.get("file_paths"):
             missing.append("document file paths")
     return missing
+
+
+def _has_required_individual_user_details(user_inputs: dict[str, Any]) -> bool:
+    return all(str(user_inputs.get(field) or "").strip() for field in REQUIRED_INDIVIDUAL_USER_FIELDS)
 
 
 def _merge_intake(current: dict[str, Any], extracted: dict[str, Any]) -> dict[str, Any]:
