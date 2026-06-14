@@ -99,12 +99,31 @@ def _structured_fields(document: dict[str, Any]) -> dict[str, str]:
         return {}
     cleaned: dict[str, str] = {}
     for field_name, value in fields.items():
-        if field_name not in VISION_FIELD_NAMES or value in {None, ""}:
+        if field_name not in VISION_FIELD_NAMES:
             continue
-        cleaned_value = _clean_value(field_name, str(value))
+        normalized_value = _normalize_structured_value(value)
+        if normalized_value in {None, ""}:
+            continue
+        cleaned_value = _clean_value(field_name, str(normalized_value))
         if cleaned_value:
             cleaned[field_name] = cleaned_value
     return cleaned
+
+
+def _normalize_structured_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in ("value", "text", "number", "raw", "normalized"):
+            nested_value = value.get(key)
+            if _present_structured_value(nested_value):
+                return nested_value
+        return next((nested_value for nested_value in value.values() if _present_structured_value(nested_value)), None)
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value if _present_structured_value(item))
+    return value
+
+
+def _present_structured_value(value: Any) -> bool:
+    return value is not None and value != ""
 
 
 def _clean_value(field_name: str, value: str) -> str:

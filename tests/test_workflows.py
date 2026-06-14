@@ -152,6 +152,31 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(document["vision_extracted_fields"]["pan_number"], "ABCDE1234F")
         self.assertTrue(document["debug"]["vision_preferred"])
 
+    def test_kyc_llm_nested_field_values_do_not_crash(self):
+        with TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "camera_upload.png"
+            image_path.write_bytes(b"not a real image, vision extractor is mocked")
+
+            def fake_vision_extractor(_path):
+                return {
+                    "document_type": "pan",
+                    "fields": {
+                        "customer_name": {"value": "Rahul Kumar", "confidence": 0.95},
+                        "pan_number": {"value": "ABCDE1234F", "confidence": 0.9},
+                    },
+                }
+
+            document = parse_document(
+                str(image_path),
+                vision_extractor=fake_vision_extractor,
+                prefer_vision=True,
+            )
+
+        extracted, _, _ = extract_fields([document])
+
+        self.assertEqual(document["vision_extracted_fields"]["customer_name"], "Rahul Kumar")
+        self.assertEqual(extracted["canonical"]["pan_number"], "ABCDE1234F")
+
 
 if __name__ == "__main__":
     unittest.main()

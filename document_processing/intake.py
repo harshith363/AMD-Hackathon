@@ -111,7 +111,7 @@ def _apply_vision_extraction(
         return False
     result["vision_fallback_succeeded"] = True
     result["debug"]["vision_fallback_succeeded"] = True
-    result["vision_extracted_fields"] = parsed.get("fields") or {}
+    result["vision_extracted_fields"] = _normalize_vision_fields(parsed.get("fields") or {})
     if parsed.get("document_type"):
         result["document_type"] = parsed["document_type"]
     result["extracted_text"] = _vision_payload_to_text(parsed)
@@ -122,9 +122,41 @@ def _apply_vision_extraction(
 
 def _has_useful_vision_payload(parsed: dict[str, Any]) -> bool:
     fields = parsed.get("fields")
-    if isinstance(fields, dict) and any(value not in {None, ""} for value in fields.values()):
+    if isinstance(fields, dict) and any(_has_present_value(value) for value in fields.values()):
         return True
     return parsed.get("document_type") not in {None, "", "unknown"}
+
+
+def _has_present_value(value: Any) -> bool:
+    if value is None or value == "":
+        return False
+    if isinstance(value, dict):
+        return any(_has_present_value(nested_value) for nested_value in value.values())
+    if isinstance(value, list):
+        return any(_has_present_value(item) for item in value)
+    return True
+
+
+def _normalize_vision_fields(fields: Any) -> dict[str, Any]:
+    if not isinstance(fields, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for key, value in fields.items():
+        normalized[key] = _normalize_vision_value(value)
+    return normalized
+
+
+def _normalize_vision_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in ("value", "text", "number", "raw", "normalized"):
+            nested_value = value.get(key)
+            if _has_present_value(nested_value):
+                return nested_value
+        return next((nested_value for nested_value in value.values() if _has_present_value(nested_value)), None)
+    if isinstance(value, list):
+        present = [_normalize_vision_value(item) for item in value if _has_present_value(item)]
+        return ", ".join(str(item) for item in present if _has_present_value(item))
+    return value
 
 
 def _vision_payload_to_text(parsed: dict[str, Any]) -> str:

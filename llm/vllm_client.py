@@ -222,7 +222,8 @@ class VLLMClient:
             "policy_copy, hospital_bill, discharge_summary, unknown. Extract these fields where visible: "
             "customer_name, date_of_birth, pan_number, aadhaar_number, address, phone_number, "
             "policy_number, patient_name, insured_name, claim_amount, incident_date.\n\n"
-            "Return shape: {\"document_type\":\"unknown\",\"fields\":{},\"summary\":\"\"}"
+            "Return shape: {\"document_type\":\"unknown\",\"fields\":{},\"summary\":\"\"}. "
+            "Every value inside fields must be a string or null, never an object or array."
         )
         try:
             content = self.chat_multimodal(
