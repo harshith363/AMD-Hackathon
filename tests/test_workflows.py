@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from document_processing.intake import parse_document
 from document_processing.classifier import classify_document
 from document_processing.extraction import extract_fields
 from orchestrator.workflow import WorkflowOrchestrator
@@ -120,6 +122,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(extracted["canonical"]["customer_name"], "Rohan Mehta")
         self.assertEqual(extracted["canonical"]["pan_number"], "AABPM1234C")
         self.assertEqual(evidence["pan_number"][0]["snippet"], "vision_extracted_fields")
+
+    def test_kyc_image_prefers_llm_parsing(self):
+        with TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "camera_upload.png"
+            image_path.write_bytes(b"not a real image, vision extractor is mocked")
+
+            def fake_vision_extractor(path):
+                self.assertEqual(path, image_path)
+                return {
+                    "document_type": "pan",
+                    "fields": {
+                        "customer_name": "Rahul Kumar",
+                        "date_of_birth": "01/01/1990",
+                        "pan_number": "ABCDE1234F",
+                    },
+                    "summary": "PAN card sample",
+                }
+
+            document = parse_document(
+                str(image_path),
+                vision_extractor=fake_vision_extractor,
+                prefer_vision=True,
+            )
+
+        self.assertEqual(document["extraction_method"], "vision_llm")
+        self.assertFalse(document["ocr_used"])
+        self.assertEqual(document["document_type"], "pan")
+        self.assertEqual(document["vision_extracted_fields"]["pan_number"], "ABCDE1234F")
+        self.assertTrue(document["debug"]["vision_preferred"])
 
 
 if __name__ == "__main__":

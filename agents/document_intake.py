@@ -10,13 +10,18 @@ class DocumentIntakeAgent:
 
     def parse(self, message: DocumentPacketMessage, trace: WorkflowTrace, llm_client=None) -> ParsedDocumentMessage:
         vision_extractor = getattr(llm_client, "extract_document_fields_from_file", None)
-        documents = [parse_document(path, vision_extractor=vision_extractor) for path in message.file_paths]
+        prefer_vision = message.customer_type == "individual" and message.workflow_type == "kyc_validation"
+        documents = [
+            parse_document(path, vision_extractor=vision_extractor, prefer_vision=prefer_vision)
+            for path in message.file_paths
+        ]
         trace.add(
             self.name,
             "parsed_documents",
             {
                 "count": len(documents),
                 "ocr_used": [d["ocr_used"] for d in documents],
+                "vision_preferred": prefer_vision,
                 "vision_fallback": [d.get("vision_fallback_succeeded", False) for d in documents],
                 "documents": [_document_debug_summary(document) for document in documents],
             },
@@ -43,6 +48,7 @@ def _document_debug_summary(document):
         "preprocessing_available": ocr_debug.get("preprocessing_available"),
         "vision_fallback_attempted": debug.get("vision_fallback_attempted", document.get("vision_fallback_attempted", False)),
         "vision_fallback_succeeded": debug.get("vision_fallback_succeeded", document.get("vision_fallback_succeeded", False)),
+        "vision_preferred": debug.get("vision_preferred", False),
         "vision_latency_ms": debug.get("vision_latency_ms"),
         "warnings": [*debug.get("warnings", []), *ocr_debug.get("warnings", [])],
     }

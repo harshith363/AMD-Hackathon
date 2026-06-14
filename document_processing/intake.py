@@ -12,7 +12,12 @@ from typing import Any, Callable
 VisionExtractor = Callable[[Path], dict[str, Any] | None]
 
 
-def parse_document(path_text: str, vision_extractor: VisionExtractor | None = None) -> dict[str, Any]:
+def parse_document(
+    path_text: str,
+    vision_extractor: VisionExtractor | None = None,
+    *,
+    prefer_vision: bool = False,
+) -> dict[str, Any]:
     path = Path(path_text).expanduser()
     result: dict[str, Any] = {
         "file_name": path.name,
@@ -41,6 +46,9 @@ def parse_document(path_text: str, vision_extractor: VisionExtractor | None = No
         result["extraction_method"] = "text"
         result["confidence"] = 0.95
     elif suffix == ".pdf":
+        if prefer_vision and _apply_vision_extraction(result, path, vision_extractor, preferred=True):
+            _finalize_debug(result)
+            return result
         text = _extract_pdf_text(path)
         result["extracted_text"] = text
         result["ocr_used"] = not bool(text.strip())
@@ -49,6 +57,9 @@ def parse_document(path_text: str, vision_extractor: VisionExtractor | None = No
         if _needs_vision_fallback(result):
             _apply_vision_extraction(result, path, vision_extractor)
     elif suffix in {".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"}:
+        if prefer_vision and _apply_vision_extraction(result, path, vision_extractor, preferred=True):
+            _finalize_debug(result)
+            return result
         text, ocr_debug = _ocr_image(path)
         result["debug"]["ocr"] = ocr_debug
         result["extracted_text"] = text
@@ -78,22 +89,26 @@ def _apply_vision_extraction(
     result: dict[str, Any],
     path: Path,
     vision_extractor: VisionExtractor | None,
-) -> None:
+    *,
+    preferred: bool = False,
+) -> bool:
+    attempt_label = "Vision parsing" if preferred else "Vision fallback"
     if vision_extractor is None:
         result["vision_fallback_attempted"] = False
         result["debug"]["vision_fallback_attempted"] = False
-        result["debug"]["warnings"].append("Vision fallback unavailable because no multimodal LLM extractor is configured.")
-        return
+        result["debug"]["warnings"].append(f"{attempt_label} unavailable because no multimodal LLM extractor is configured.")
+        return False
     result["vision_fallback_attempted"] = True
     result["debug"]["vision_fallback_attempted"] = True
+    result["debug"]["vision_preferred"] = preferred
     started = time.perf_counter()
     parsed = vision_extractor(path)
     result["debug"]["vision_latency_ms"] = round((time.perf_counter() - started) * 1000)
-    if not parsed:
+    if not parsed or not _has_useful_vision_payload(parsed):
         result["vision_fallback_succeeded"] = False
         result["debug"]["vision_fallback_succeeded"] = False
-        result["debug"]["warnings"].append("Vision fallback did not return structured fields.")
-        return
+        result["debug"]["warnings"].append(f"{attempt_label} did not return structured fields.")
+        return False
     result["vision_fallback_succeeded"] = True
     result["debug"]["vision_fallback_succeeded"] = True
     result["vision_extracted_fields"] = parsed.get("fields") or {}
@@ -102,6 +117,14 @@ def _apply_vision_extraction(
     result["extracted_text"] = _vision_payload_to_text(parsed)
     result["extraction_method"] = "vision_llm"
     result["confidence"] = 0.88
+    return True
+
+
+def _has_useful_vision_payload(parsed: dict[str, Any]) -> bool:
+    fields = parsed.get("fields")
+    if isinstance(fields, dict) and any(value not in {None, ""} for value in fields.values()):
+        return True
+    return parsed.get("document_type") not in {None, "", "unknown"}
 
 
 def _vision_payload_to_text(parsed: dict[str, Any]) -> str:
