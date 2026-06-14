@@ -20,7 +20,7 @@ from domain_tools import get_claim_types, get_insurance_categories, get_supporte
 from orchestrator.workflow import WorkflowOrchestrator
 
 DEFAULT_BASE_URL = "http://localhost:8000/v1"
-DEFAULT_MODEL = "google/gemma-4-E4B-it"
+DEFAULT_MODEL = "Qwen/Qwen2.5-32B-Instruct"
 DEFAULT_API_KEY = "EMPTY"
 DEFAULT_TIMEOUT = 20
 

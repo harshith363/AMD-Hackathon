@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
 
+from document_processing.classifier import classify_document
+from document_processing.extraction import extract_fields
 from orchestrator.workflow import WorkflowOrchestrator
 from schemas.messages import DocumentPacketMessage
 
@@ -71,6 +73,53 @@ class WorkflowTests(unittest.TestCase):
             )
         )
         self.assertTrue(any(issue.get("field") == "address" for issue in report.json_report["validation_issues"]))
+
+    def test_kyc_extracts_camera_ocr_text_without_strict_labels(self):
+        documents = [
+            classify_document(
+                {
+                    "document_type": "unknown",
+                    "confidence": 0.75,
+                    "extracted_text": "INCOME TAX DEPARTMENT\nName Rohan Mehta\nDOB 05/03/1992\nAABPM 1234 C",
+                }
+            ),
+            classify_document(
+                {
+                    "document_type": "unknown",
+                    "confidence": 0.75,
+                    "extracted_text": "Government of India\nRohan Mehta\nDate of Birth 05/03/1992\n1234 5678 9012\nAddress 77 Park Street Mumbai\nMobile 98765 43210",
+                }
+            ),
+        ]
+
+        extracted, _, _ = extract_fields(documents)
+        canonical = extracted["canonical"]
+
+        self.assertEqual(documents[0]["document_type"], "pan")
+        self.assertEqual(documents[1]["document_type"], "identity_proof")
+        self.assertEqual(canonical["pan_number"], "AABPM1234C")
+        self.assertEqual(canonical["aadhaar_number"], "1234 5678 9012")
+        self.assertEqual(canonical["phone_number"], "9876543210")
+        self.assertEqual(canonical["date_of_birth"], "05/03/1992")
+
+    def test_kyc_extracts_structured_vision_fields(self):
+        documents = [
+            {
+                "document_type": "pan",
+                "confidence": 0.88,
+                "extracted_text": "",
+                "vision_extracted_fields": {
+                    "customer_name": "Rohan Mehta",
+                    "pan_number": "AABPM 1234 C",
+                },
+            }
+        ]
+
+        extracted, evidence, _ = extract_fields(documents)
+
+        self.assertEqual(extracted["canonical"]["customer_name"], "Rohan Mehta")
+        self.assertEqual(extracted["canonical"]["pan_number"], "AABPM1234C")
+        self.assertEqual(evidence["pan_number"][0]["snippet"], "vision_extracted_fields")
 
 
 if __name__ == "__main__":

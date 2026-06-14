@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 DOCUMENT_HINTS = {
@@ -55,4 +56,19 @@ def classify_document(document: dict[str, Any]) -> dict[str, Any]:
     if scores:
         document["document_type"] = max(scores, key=scores.get)
         document["confidence"] = max(float(document.get("confidence", 0.5)), min(0.99, 0.55 + (max(scores.values()) * 0.1)))
+    else:
+        _classify_from_extracted_clues(document)
     return document
+
+
+def _classify_from_extracted_clues(document: dict[str, Any]) -> None:
+    text = document.get("extracted_text", "")
+    fields = document.get("vision_extracted_fields") or {}
+    field_names = set(fields) if isinstance(fields, dict) else set()
+    if "pan_number" in field_names or re.search(r"\b[A-Z]{5}\s*[0-9]{4}\s*[A-Z]\b", text):
+        document["document_type"] = "pan"
+        document["confidence"] = max(float(document.get("confidence", 0.5)), 0.82)
+        return
+    if "aadhaar_number" in field_names or re.search(r"\b[0-9]{4}\s*[0-9]{4}\s*[0-9]{4}\b", text):
+        document["document_type"] = "identity_proof"
+        document["confidence"] = max(float(document.get("confidence", 0.5)), 0.82)
