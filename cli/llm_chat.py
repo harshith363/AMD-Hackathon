@@ -124,6 +124,7 @@ def _empty_intake() -> dict[str, Any]:
         "case_type": None,
         "file_paths": [],
         "user_inputs": {},
+        "incident_description": None,
         "ready_to_run": False,
     }
 
@@ -145,6 +146,12 @@ def _missing_fields(collected: dict[str, Any]) -> list[str]:
     elif workflow in {"claim_validation", "kyc_validation", "kyb_validation"}:
         if workflow == "claim_validation" and not collected.get("case_type"):
             missing.append("claim_type")
+        if (
+            collected.get("customer_type") == "individual"
+            and workflow == "claim_validation"
+            and not collected.get("incident_description")
+        ):
+            missing.append("incident description")
         if not collected.get("file_paths"):
             missing.append("document file paths")
     return missing
@@ -157,6 +164,8 @@ def _merge_intake(current: dict[str, Any], extracted: dict[str, Any]) -> dict[st
             merged[key] = extracted[key]
     if extracted.get("file_paths"):
         merged["file_paths"] = extracted["file_paths"]
+    if extracted.get("incident_description"):
+        merged["incident_description"] = extracted["incident_description"]
     if isinstance(extracted.get("user_inputs"), dict):
         merged["user_inputs"] = {**merged.get("user_inputs", {}), **extracted["user_inputs"]}
     if extracted.get("ready_to_run"):
@@ -193,6 +202,8 @@ def _run_collected_workflow(orchestrator: WorkflowOrchestrator, collected: dict[
             workflow_type=collected["workflow_type"],
             case_type=collected["case_type"],
             file_paths=collected["file_paths"],
+            user_inputs=collected.get("user_inputs", {}),
+            incident_description=collected.get("incident_description"),
         )
     )
 

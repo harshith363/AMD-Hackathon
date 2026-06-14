@@ -84,6 +84,9 @@ class WorkflowOrchestrator:
             extracted,
             reconciled,
             trace,
+            user_inputs=message.user_inputs,
+            incident_description=message.incident_description,
+            llm_client=self.llm_client,
         )
         validation = self.escalation.decide(validation, trace)
         report = self.report.validation_report(
@@ -93,6 +96,8 @@ class WorkflowOrchestrator:
             validation,
             extracted,
             trace,
+            user_inputs=message.user_inputs,
+            incident_description=message.incident_description,
         )
         self.database.save_report(message.session_id, report)
         self._write_report(report)

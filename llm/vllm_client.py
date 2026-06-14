@@ -114,7 +114,8 @@ class VLLMClient:
             "Do not include markdown. Preserve existing values unless the user clearly changes them.\n\n"
             "Use the domain context for allowed workflow types, insurance categories, and claim types. "
             "Do not invent values outside the domain context.\n"
-            "For document workflows, collect file_paths as a JSON array of strings.\n"
+            "For document workflows, collect file_paths as a JSON array of strings. "
+            "For individual claims, collect incident_description when the user describes what happened.\n"
             "For product discovery, collect user_inputs as a JSON object of any business/customer details.\n"
             "Set ready_to_run true only when the user says to run, submit, start, validate, proceed, or has provided file paths for a document workflow.\n\n"
             "Return this JSON shape:\n"
@@ -125,6 +126,7 @@ class VLLMClient:
             "\"case_type\": null,"
             "\"file_paths\": [],"
             "\"user_inputs\": {},"
+            "\"incident_description\": null,"
             "\"ready_to_run\": false"
             "}\n\n"
             f"Existing values: {json.dumps(current, indent=2)}\n"
@@ -136,6 +138,49 @@ class VLLMClient:
                 prompt,
                 system="You are a precise JSON extraction engine for an insurance CLI.",
                 max_tokens=420,
+                temperature=0.0,
+            )
+            return _extract_json_object(content)
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def validate_application_details(self, details: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "Validate these individual insurance application details. Return JSON only with keys "
+            "is_valid, issues, and normalized_details. Check that address, phone_number, job, "
+            "and annual_income are plausible and present. Do not reject just because the details "
+            "are brief.\n\n"
+            f"Details: {json.dumps(details, indent=2)}"
+        )
+        try:
+            content = self.chat(
+                prompt,
+                system="You validate insurance application details and return compact JSON only.",
+                max_tokens=260,
+                temperature=0.0,
+            )
+            return _extract_json_object(content)
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def verify_identity_consistency(self, user_details: dict[str, Any], extracted_fields: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "Compare user-provided details with fields extracted from PAN/Aadhaar/identity documents. "
+            "The match does not need to be exact, but it must be consistent. Return JSON only with "
+            "keys is_consistent, issues, and confidence. Treat abbreviations, casing, and minor spelling "
+            "differences as acceptable.\n\n"
+            f"User details: {json.dumps(user_details, indent=2)}\n"
+            f"Extracted fields: {json.dumps(extracted_fields, indent=2)}"
+        )
+        try:
+            content = self.chat(
+                prompt,
+                system="You verify KYC consistency and return compact JSON only.",
+                max_tokens=260,
                 temperature=0.0,
             )
             return _extract_json_object(content)

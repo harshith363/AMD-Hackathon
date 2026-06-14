@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from uuid import uuid4
 
 import streamlit as st
@@ -34,6 +35,7 @@ def main() -> None:
     _render_option_cards()
     _render_document_uploader()
     _render_report()
+    _render_policy_application_form()
     _handle_chat_input()
     st.markdown("</main>", unsafe_allow_html=True)
 
@@ -59,6 +61,8 @@ def _reset_conversation() -> None:
     st.session_state.transcript = []
     st.session_state.messages = []
     st.session_state.report = None
+    st.session_state.pending_policy_report = None
+    st.session_state.policy_application_approved = False
     st.session_state.pending_user_text = None
     st.session_state.selected_option = None
     st.session_state.upload_session_id = uuid4().hex[:10]
@@ -112,10 +116,15 @@ def _process_pending_message() -> None:
     if result["report"]:
         st.session_state.report = result["report"]
         st.session_state.messages.append({"role": "assistant", "content": _report_summary(result["report"])})
-        st.session_state.collected = _empty_intake()
-        st.session_state.transcript = []
-        st.session_state.selected_option = None
-        st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
+        if _is_individual_policy_report(result["report"]):
+            st.session_state.pending_policy_report = result["report"]
+            st.session_state.policy_application_approved = False
+            st.session_state.messages.append({"role": "assistant", "content": "Please review the recommended policy. If you approve it, I will collect application details and move to KYC."})
+        else:
+            st.session_state.collected = _empty_intake()
+            st.session_state.transcript = []
+            st.session_state.selected_option = None
+            st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
     elif not result["assistant_messages"]:
         question = next_assistant_question(st.session_state.orchestrator, st.session_state.collected)
         if question:
@@ -149,20 +158,37 @@ def _render_option_cards() -> None:
 
 
 def _render_document_uploader() -> None:
-    if "document file paths" not in _missing_fields(st.session_state.collected):
+    missing = _missing_fields(st.session_state.collected)
+    if "document file paths" not in missing and "incident description" not in missing:
         return
     with st.expander("Upload documents", expanded=True):
+        if _is_individual_kyc_intake(st.session_state.collected):
+            st.caption("Upload PAN card and Aadhaar card as PDF or image files.")
+        if _is_individual_claim_intake(st.session_state.collected):
+            st.session_state.collected["incident_description"] = st.text_area(
+                "Incident description",
+                value=st.session_state.collected.get("incident_description") or "",
+                placeholder="Briefly describe what happened, when it happened, and the loss or treatment involved.",
+            ).strip()
         uploaded_files = st.file_uploader(
             "Attach PDF, image, or TXT files",
             type=["txt", "pdf", "png", "jpg", "jpeg", "tiff", "bmp", "webp"],
             accept_multiple_files=True,
             label_visibility="collapsed",
         )
-        if uploaded_files and st.button("Use uploaded files", type="primary"):
-            paths = _save_uploaded_files(uploaded_files)
-            st.session_state.collected["file_paths"] = paths
+        existing_paths = st.session_state.collected.get("file_paths") or []
+        ready_for_submit = bool(uploaded_files or existing_paths)
+        if _is_individual_claim_intake(st.session_state.collected):
+            ready_for_submit = ready_for_submit and bool(st.session_state.collected.get("incident_description"))
+        if ready_for_submit and st.button("Use uploaded files", type="primary"):
+            if uploaded_files:
+                paths = _save_uploaded_files(uploaded_files)
+                st.session_state.collected["file_paths"] = paths
             st.session_state.collected = _normalize_intake(st.session_state.collected)
-            st.session_state.messages.append({"role": "user", "content": "Uploaded documents:\n" + "\n".join(paths)})
+            uploaded_text = "Uploaded documents:\n" + "\n".join(st.session_state.collected["file_paths"])
+            if st.session_state.collected.get("incident_description"):
+                uploaded_text += f"\n\nIncident description: {st.session_state.collected['incident_description']}"
+            st.session_state.messages.append({"role": "user", "content": uploaded_text})
             report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
             if report:
                 st.session_state.report = report
@@ -174,6 +200,72 @@ def _render_document_uploader() -> None:
                 question = next_assistant_question(st.session_state.orchestrator, st.session_state.collected)
                 st.session_state.messages.append({"role": "assistant", "content": question})
             st.rerun()
+
+
+def _render_policy_application_form() -> None:
+    report = st.session_state.get("pending_policy_report")
+    if not report:
+        return
+    with st.expander("Policy application", expanded=True):
+        payload = report.json_report
+        st.caption("Recommended policies")
+        for item in payload["recommendations"]:
+            st.markdown(f"**{item['scheme_name']}**")
+            st.write(item["recommended_next_step"])
+
+        if not st.session_state.policy_application_approved:
+            approve_col, decline_col = st.columns(2)
+            with approve_col:
+                if st.button("Approve recommendation", type="primary", use_container_width=True):
+                    st.session_state.policy_application_approved = True
+                    st.rerun()
+            with decline_col:
+                if st.button("Do not proceed", use_container_width=True):
+                    st.session_state.pending_policy_report = None
+                    st.session_state.policy_application_approved = False
+                    st.session_state.collected = _empty_intake()
+                    st.session_state.transcript = []
+                    st.session_state.messages.append({"role": "assistant", "content": "No problem. What would you like to process next?"})
+                    st.rerun()
+            return
+
+        with st.form("individual_policy_application_form"):
+            address = st.text_area("Address")
+            phone_number = st.text_input("Phone number")
+            job = st.text_input("Job")
+            annual_income = st.text_input("Annual income")
+            submitted = st.form_submit_button("Validate and continue to KYC", type="primary")
+
+        if not submitted:
+            return
+
+        details = {
+            **payload.get("user_inputs", {}),
+            "address": address.strip(),
+            "phone_number": phone_number.strip(),
+            "job": job.strip(),
+            "annual_income": annual_income.strip(),
+            "recommended_policy_ids": [item["scheme_id"] for item in payload["recommendations"]],
+        }
+        validation = _validate_application_details(details)
+        if not validation["is_valid"]:
+            st.error("Please correct: " + "; ".join(validation["issues"]))
+            return
+
+        st.session_state.pending_policy_report = None
+        st.session_state.policy_application_approved = False
+        st.session_state.collected = {
+            **_empty_intake(),
+            "customer_type": "individual",
+            "workflow_type": "kyc_validation",
+            "case_type": "kyc",
+            "user_inputs": validation.get("normalized_details") or details,
+            "ready_to_run": False,
+        }
+        st.session_state.transcript = []
+        st.session_state.messages.append({"role": "user", "content": "Approved policy recommendation and submitted application details."})
+        st.session_state.messages.append({"role": "assistant", "content": "Application details look usable. Please upload PAN card and Aadhaar card PDF or image files for KYC verification."})
+        st.rerun()
 
 
 def _render_report() -> None:
@@ -277,7 +369,57 @@ def _report_summary(report) -> str:
         names = ", ".join(item["scheme_name"] for item in payload["recommendations"]) or "no matching schemes"
         return f"Product discovery is complete. Recommended schemes: {names}."
     missing = ", ".join(payload["missing_documents"]) or "none"
+    if (
+        payload.get("customer_type") == "individual"
+        and payload.get("workflow_type") == "claim_validation"
+        and payload.get("status") == "Ready for Submission"
+    ):
+        return "Claim validation is complete. Everything looks fine, and the claim has been generated."
     return f"Validation complete. Status: {payload['status']}. Missing documents: {missing}."
+
+
+def _is_individual_policy_report(report) -> bool:
+    payload = report.json_report
+    return report.report_type == "new_insurance" and payload.get("customer_type") == "individual"
+
+
+def _is_individual_claim_intake(collected: dict) -> bool:
+    return collected.get("customer_type") == "individual" and collected.get("workflow_type") == "claim_validation"
+
+
+def _is_individual_kyc_intake(collected: dict) -> bool:
+    return collected.get("customer_type") == "individual" and collected.get("workflow_type") == "kyc_validation"
+
+
+def _validate_application_details(details: dict) -> dict:
+    llm_result = st.session_state.orchestrator.llm_client.validate_application_details(details)
+    if isinstance(llm_result, dict) and "is_valid" in llm_result:
+        return {
+            "is_valid": bool(llm_result.get("is_valid")),
+            "issues": [str(issue) for issue in llm_result.get("issues") or []],
+            "normalized_details": llm_result.get("normalized_details") or details,
+        }
+
+    issues = []
+    if not details.get("address"):
+        issues.append("address is required")
+    if not _valid_phone(str(details.get("phone_number") or "")):
+        issues.append("phone number should be 10 to 15 digits")
+    if not details.get("job"):
+        issues.append("job is required")
+    if _income_value(details.get("annual_income")) <= 0:
+        issues.append("annual income should be greater than zero")
+    return {"is_valid": not issues, "issues": issues, "normalized_details": details}
+
+
+def _valid_phone(value: str) -> bool:
+    digits = re.sub(r"\D+", "", value)
+    return 10 <= len(digits) <= 15
+
+
+def _income_value(value) -> int:
+    digits = re.sub(r"\D+", "", str(value or ""))
+    return int(digits) if digits else 0
 
 
 def _display_label(value: str) -> str:

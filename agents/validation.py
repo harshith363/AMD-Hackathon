@@ -21,6 +21,10 @@ class ValidationAgent:
         extraction: ExtractionResultMessage,
         reconciliation: ReconciliationMessage,
         trace: WorkflowTrace,
+        *,
+        user_inputs: dict[str, Any] | None = None,
+        incident_description: str | None = None,
+        llm_client: Any | None = None,
     ) -> ValidationResultMessage:
         rule = _select_rule(customer_type, workflow_type, case_type)
         received_types = {doc.get("document_type") for doc in classified.documents}
@@ -34,6 +38,10 @@ class ValidationAgent:
                 issues.append({"severity": "low", "field": field_name, "message": f"Missing key field: {field_name}"})
 
         _append_format_issues(canonical, issues)
+        if customer_type == "individual" and workflow_type == "claim_validation":
+            _append_claim_description_issues(incident_description, canonical, issues)
+        if customer_type == "individual" and workflow_type == "kyc_validation" and user_inputs:
+            _append_kyc_user_detail_issues(user_inputs, canonical, issues, llm_client)
         status, human_review_required, next_action = _decide_status(missing_documents, issues)
         confidence = _adjust_confidence(extraction.confidence, missing_documents, issues)
         trace.add(self.name, "validated_case", {"status": status, "missing_documents": missing_documents, "issues": len(issues)})
@@ -61,6 +69,75 @@ def _append_format_issues(canonical: dict[str, Any], issues: list[dict[str, Any]
     gstin = canonical.get("gstin")
     if gstin and not re.fullmatch(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]", gstin):
         issues.append({"severity": "medium", "field": "gstin", "message": "GSTIN format is invalid"})
+
+
+def _append_claim_description_issues(
+    incident_description: str | None,
+    canonical: dict[str, Any],
+    issues: list[dict[str, Any]],
+) -> None:
+    description = (incident_description or "").strip()
+    if not description:
+        issues.append({"severity": "medium", "field": "incident_description", "message": "Incident description is required"})
+        return
+    if len(description.split()) < 5:
+        issues.append({"severity": "low", "field": "incident_description", "message": "Incident description is too brief for claim review"})
+    incident_date = canonical.get("incident_date")
+    if incident_date and incident_date not in description:
+        issues.append(
+            {
+                "severity": "low",
+                "field": "incident_description",
+                "message": "Incident description does not mention the extracted incident date",
+            }
+        )
+
+
+def _append_kyc_user_detail_issues(
+    user_inputs: dict[str, Any],
+    canonical: dict[str, Any],
+    issues: list[dict[str, Any]],
+    llm_client: Any | None,
+) -> None:
+    verification = None
+    if llm_client is not None:
+        verification = llm_client.verify_identity_consistency(user_inputs, canonical)
+    if isinstance(verification, dict):
+        if verification.get("is_consistent") is False:
+            for issue in verification.get("issues") or ["User details are not consistent with KYC documents"]:
+                issues.append({"severity": "medium", "field": "user_details", "message": str(issue)})
+        return
+
+    comparisons = {
+        "address": "address",
+        "name": "customer_name",
+        "date_of_birth": "date_of_birth",
+        "pan_number": "pan_number",
+    }
+    for user_key, extracted_key in comparisons.items():
+        user_value = user_inputs.get(user_key)
+        extracted_value = canonical.get(extracted_key)
+        if user_value and extracted_value and not _consistent_text(str(user_value), str(extracted_value)):
+            issues.append(
+                {
+                    "severity": "medium",
+                    "field": user_key,
+                    "message": f"{user_key} is not consistent with extracted KYC document details",
+                }
+            )
+
+
+def _consistent_text(left: str, right: str) -> bool:
+    left_norm = set(_normalize_for_match(left).split())
+    right_norm = set(_normalize_for_match(right).split())
+    if not left_norm or not right_norm:
+        return False
+    overlap = left_norm & right_norm
+    return bool(overlap) and len(overlap) / min(len(left_norm), len(right_norm)) >= 0.5
+
+
+def _normalize_for_match(value: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", " ", value.lower()).strip()
 
 
 def _decide_status(missing_documents: list[str], issues: list[dict[str, Any]]) -> tuple[str, bool, str]:

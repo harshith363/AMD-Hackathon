@@ -23,6 +23,9 @@ class ReportAgent:
         validation: ValidationResultMessage,
         extraction: ExtractionResultMessage,
         trace: WorkflowTrace,
+        *,
+        user_inputs: dict[str, Any] | None = None,
+        incident_description: str | None = None,
     ) -> ReportMessage:
         report_id = f"RPT-{uuid4().hex[:10].upper()}"
         json_report: dict[str, Any] = {
@@ -37,6 +40,8 @@ class ReportAgent:
             "missing_documents": validation.missing_documents,
             "validation_issues": validation.issues,
             "extracted_key_fields": extraction.extracted_fields.get("canonical", {}),
+            "user_inputs": user_inputs or {},
+            "incident_description": incident_description,
             "evidence": extraction.evidence,
             "next_action": validation.next_action,
             "trace": trace.to_list(),
@@ -92,6 +97,8 @@ def _markdown_validation_report(report: dict[str, Any]) -> str:
         f"- Next action: {report['next_action']}",
         "",
     ]
+    if report.get("incident_description"):
+        lines.extend(["## Incident Description", report["incident_description"], ""])
     if report.get("llm_explanation"):
         lines.extend(["## LLM Explanation", report["llm_explanation"], ""])
     lines.append("## Missing Documents")

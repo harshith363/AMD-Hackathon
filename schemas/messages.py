@@ -60,6 +60,8 @@ class DocumentPacketMessage(MessageModel):
     workflow_type: Literal["claim_validation", "kyc_validation", "kyb_validation"]
     case_type: str
     file_paths: list[str] = Field(default_factory=list)
+    user_inputs: dict[str, Any] = Field(default_factory=dict)
+    incident_description: str | None = None
 
 
 class ParsedDocumentMessage(MessageModel):
