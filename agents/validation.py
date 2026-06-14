@@ -113,6 +113,8 @@ def _append_kyc_user_detail_issues(
         "name": "customer_name",
         "date_of_birth": "date_of_birth",
         "pan_number": "pan_number",
+        "aadhaar_number": "aadhaar_number",
+        "phone_number": "phone_number",
     }
     for user_key, extracted_key in comparisons.items():
         user_value = user_inputs.get(user_key)

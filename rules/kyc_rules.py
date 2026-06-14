@@ -1,7 +1,7 @@
 KYC_RULES = {
     "individual": {
         "required_documents": ["pan", "identity_proof"],
-        "field_checks": ["customer_name", "date_of_birth", "pan_number", "address"],
+        "field_checks": ["customer_name", "date_of_birth", "pan_number", "aadhaar_number", "address", "phone_number"],
         "consistency_checks": ["customer_name", "date_of_birth", "address"],
     },
     "business": {

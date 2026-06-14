@@ -40,6 +40,7 @@ class ReportAgent:
             "missing_documents": validation.missing_documents,
             "validation_issues": validation.issues,
             "extracted_key_fields": extraction.extracted_fields.get("canonical", {}),
+            "extracted_by_document": _group_extracted_fields_by_document(extraction.extracted_fields.get("by_field", {})),
             "user_inputs": user_inputs or {},
             "incident_description": incident_description,
             "evidence": extraction.evidence,
@@ -110,6 +111,15 @@ def _markdown_validation_report(report: dict[str, Any]) -> str:
     lines.append("## Extracted Key Fields")
     lines.extend([f"- {key}: {value}" for key, value in report["extracted_key_fields"].items()] or ["- None"])
     return "\n".join(lines)
+
+
+def _group_extracted_fields_by_document(by_field: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for field_name, values in by_field.items():
+        for item in values:
+            document_type = item.get("document_type", "unknown")
+            grouped.setdefault(document_type, {})[field_name] = item.get("value")
+    return grouped
 
 
 def _markdown_product_report(report: dict[str, Any]) -> str:

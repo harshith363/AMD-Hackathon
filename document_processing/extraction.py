@@ -13,6 +13,8 @@ FIELD_PATTERNS = {
     "employee_name": r"(?:employee name|name)\s*[:\-]\s*([A-Za-z .]+)",
     "company_name": r"(?:company name|account holder|insured company)\s*[:\-]\s*([A-Za-z0-9 &.,]+)",
     "pan_number": r"(?:pan number|pan)\s*[:\-]\s*([A-Z]{5}[0-9]{4}[A-Z])",
+    "aadhaar_number": r"(?:aadhaar number|aadhar number|aadhaar|aadhar)\s*[:\-]\s*([0-9]{4}\s?[0-9]{4}\s?[0-9]{4})",
+    "phone_number": r"(?:phone number|mobile number|phone|mobile)\s*[:\-]\s*(\+?[0-9][0-9 \-]{8,18})",
     "gstin": r"(?:gstin|gst number)\s*[:\-]\s*([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])",
     "registered_address": r"(?:registered address|address)\s*[:\-]\s*([A-Za-z0-9 ,.\-/]+)",
     "address": r"(?:residential address|address)\s*[:\-]\s*([A-Za-z0-9 ,.\-/]+)",

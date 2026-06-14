@@ -187,6 +187,25 @@ class VLLMClient:
         except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
             return None
 
+    def summarize_kyc_fields(self, payload: dict[str, Any]) -> str | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "Write a very precise KYC field summary for the user. Mention fields parsed from each document, "
+            "then state whether the details appear aligned. Do not add legal advice or extra workflow steps. "
+            "Keep it under 120 words.\n\n"
+            f"{json.dumps(payload, indent=2)}"
+        )
+        try:
+            return self.chat(
+                prompt,
+                system="You summarize parsed KYC fields precisely and concisely.",
+                max_tokens=180,
+                temperature=0.0,
+            )
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
     def chat(
         self,
         prompt: str,
