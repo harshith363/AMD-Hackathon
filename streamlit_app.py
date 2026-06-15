@@ -174,6 +174,8 @@ def _render_option_cards() -> None:
 def _render_document_uploader() -> None:
     missing = _missing_fields(st.session_state.collected)
     if _is_identity_intake(st.session_state.collected):
+        if st.session_state.get("pending_kyc_report"):
+            return
         _render_identity_document_uploader()
         return
     if (
@@ -365,6 +367,7 @@ def _render_identity_document_uploader() -> None:
 
     with st.expander(f"{identity_label} document checklist", expanded=True):
         st.markdown(_identity_compliance_rules(customer_type))
+        staged_files = {}
         for doc_type in required_documents:
             label = _display_label(doc_type).title()
             existing_path = uploads.get(doc_type)
@@ -376,25 +379,17 @@ def _render_identity_document_uploader() -> None:
                 key=f"identity_upload_{doc_type}",
             )
             if uploaded_file is not None:
-                uploads[doc_type] = _save_uploaded_file_for_doc(uploaded_file, doc_type)
-                st.rerun()
+                staged_files[doc_type] = uploaded_file
 
-        missing_docs = [doc_type for doc_type in required_documents if not uploads.get(doc_type)]
+        missing_docs = [doc_type for doc_type in required_documents if not uploads.get(doc_type) and doc_type not in staged_files]
         if missing_docs:
             st.info("Upload all required documents before validation: " + ", ".join(_display_label(item) for item in missing_docs) + ".")
             return
 
-        if st.button(f"Validate {identity_label} documents", type="primary", use_container_width=True):
-            st.session_state.collected["file_paths"] = [uploads[doc_type] for doc_type in required_documents]
-            st.session_state.collected = _normalize_intake(st.session_state.collected)
-            st.session_state.messages.append({"role": "user", "content": f"Uploaded all required {identity_label} documents."})
-            report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
-            if report:
-                st.session_state.report = report
-                st.session_state.pending_kyc_report = report
-                st.session_state.messages.append({"role": "assistant", "content": _report_summary(report)})
-                st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
-                st.session_state.awaiting_document_followup = not _kyc_details_align(report.json_report)
+        if st.button(f"Upload and analyze {identity_label} documents", type="primary", use_container_width=True):
+            for doc_type, uploaded_file in staged_files.items():
+                uploads[doc_type] = _save_uploaded_file_for_doc(uploaded_file, doc_type)
+            _run_identity_validation(customer_type, payload_user_inputs=st.session_state.collected.get("user_inputs") or {})
             st.rerun()
 
 
@@ -441,7 +436,8 @@ def _render_identity_reupload_controls(payload: dict) -> None:
     if not target_docs:
         target_docs = _required_identity_documents(customer_type)
     st.markdown("**Upload corrected document**")
-    st.caption("Replace only the document named below. I will re-run validation after you upload the corrected file.")
+    st.caption("Choose the corrected file, then press the button to upload and analyze it.")
+    staged_files = {}
     for doc_type in target_docs:
         uploaded_file = st.file_uploader(
             f"Re-upload {_display_label(doc_type).title()}",
@@ -449,29 +445,13 @@ def _render_identity_reupload_controls(payload: dict) -> None:
             key=f"reupload_{doc_type}",
         )
         if uploaded_file is not None:
+            staged_files[doc_type] = uploaded_file
+
+    if staged_files and st.button(f"Upload correction and analyze {identity_label}", type="primary", use_container_width=True):
+        for doc_type, uploaded_file in staged_files.items():
             st.session_state.identity_uploads[doc_type] = _save_uploaded_file_for_doc(uploaded_file, doc_type)
-            required_documents = _required_identity_documents(customer_type)
-            st.session_state.collected = {
-                **_empty_intake(),
-                "customer_type": customer_type,
-                "workflow_type": "kyb_validation" if customer_type == "business" else "kyc_validation",
-                "case_type": "kyb" if customer_type == "business" else "kyc",
-                "user_inputs": payload.get("user_inputs") or {},
-                "file_paths": [
-                    st.session_state.identity_uploads[required_doc]
-                    for required_doc in required_documents
-                    if st.session_state.identity_uploads.get(required_doc)
-                ],
-                "ready_to_run": True,
-            }
-            if len(st.session_state.collected["file_paths"]) == len(required_documents):
-                report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
-                if report:
-                    st.session_state.pending_kyc_report = report
-                    st.session_state.report = report
-                    st.session_state.messages.append({"role": "assistant", "content": f"Thanks, I rechecked the updated {identity_label} document set."})
-                    st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
-            st.rerun()
+        _run_identity_validation(customer_type, payload_user_inputs=payload.get("user_inputs") or {}, correction=True)
+        st.rerun()
 
 
 def _handle_chat_input() -> None:
@@ -599,6 +579,43 @@ def _save_uploaded_file_for_doc(uploaded_file, doc_type: str) -> str:
     target = output_dir / f"{doc_type}_{safe_name}"
     target.write_bytes(uploaded_file.getbuffer())
     return str(target)
+
+
+def _run_identity_validation(customer_type: str | None, *, payload_user_inputs: dict, correction: bool = False) -> None:
+    identity_label = "KYB" if customer_type == "business" else "KYC"
+    required_documents = _required_identity_documents(customer_type)
+    uploads = st.session_state.get("identity_uploads") or {}
+    missing_docs = [doc_type for doc_type in required_documents if not uploads.get(doc_type)]
+    if missing_docs:
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": "I still need these documents before analysis: "
+                + ", ".join(_display_label(item) for item in missing_docs)
+                + ".",
+            }
+        )
+        return
+
+    st.session_state.collected = {
+        **_empty_intake(),
+        "customer_type": customer_type,
+        "workflow_type": "kyb_validation" if customer_type == "business" else "kyc_validation",
+        "case_type": "kyb" if customer_type == "business" else "kyc",
+        "user_inputs": payload_user_inputs,
+        "file_paths": [uploads[doc_type] for doc_type in required_documents],
+        "ready_to_run": True,
+    }
+    st.session_state.collected = _normalize_intake(st.session_state.collected)
+    user_message = f"Uploaded corrected {identity_label} document and requested analysis." if correction else f"Uploaded all required {identity_label} documents and requested analysis."
+    st.session_state.messages.append({"role": "user", "content": user_message})
+    report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
+    if report:
+        st.session_state.report = report
+        st.session_state.pending_kyc_report = report
+        st.session_state.messages.append({"role": "assistant", "content": _report_summary(report)})
+        st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
+        st.session_state.awaiting_document_followup = not _kyc_details_align(report.json_report)
 
 
 def _required_identity_documents(customer_type: str | None) -> list[str]:
