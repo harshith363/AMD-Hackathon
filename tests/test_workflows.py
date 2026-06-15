@@ -7,6 +7,7 @@ from document_processing.classifier import classify_document
 from document_processing.extraction import extract_fields
 from agents.reconciliation import ReconciliationAgent
 from agents.validation import ValidationAgent
+from domain_tools import get_claim_types, get_insurance_categories, get_product_catalog_options
 from orchestrator.trace import WorkflowTrace
 from orchestrator.workflow import WorkflowOrchestrator
 from schemas.messages import ClassifiedDocumentMessage, DocumentPacketMessage, ExtractionResultMessage, ReconciliationMessage
@@ -32,6 +33,22 @@ def _packet(
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_product_categories_are_scoped_and_expanded(self):
+        self.assertEqual(get_insurance_categories("individual")["categories"], ["health", "life", "motor"])
+        self.assertEqual(get_insurance_categories("business")["categories"], ["cybersecurity", "liability", "property"])
+
+        for category in ["health", "life", "motor"]:
+            schemes = get_product_catalog_options("individual", category)["schemes"]
+            self.assertGreaterEqual(len(schemes), 4)
+
+        for category in ["cybersecurity", "liability", "property"]:
+            schemes = get_product_catalog_options("business", category)["schemes"]
+            self.assertGreaterEqual(len(schemes), 4)
+
+    def test_claim_types_are_scoped_to_active_insurance_lines(self):
+        self.assertEqual(get_claim_types("individual")["claim_types"], ["health", "life", "motor"])
+        self.assertEqual(get_claim_types("business")["claim_types"], ["cybersecurity", "professional_liability", "property_damage"])
+
     def test_business_property_claim_missing_repair_estimate(self):
         orchestrator = WorkflowOrchestrator()
         report = orchestrator.run_document_validation(

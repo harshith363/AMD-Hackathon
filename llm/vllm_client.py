@@ -118,7 +118,7 @@ class VLLMClient:
             "Use the domain context for allowed workflow types, insurance categories, and claim types. "
             "Do not invent values outside the domain context.\n"
             "For document workflows, collect file_paths as a JSON array of strings. "
-            "For individual claims, collect incident_description when the user describes what happened.\n"
+            "For claim workflows, collect incident_description when the user describes what happened.\n"
             "For product discovery, collect user_inputs as a JSON object of any business/customer details.\n"
             "Set ready_to_run true only when the user says to run, submit, start, validate, proceed, or has provided file paths for a document workflow.\n\n"
             "Return this JSON shape:\n"

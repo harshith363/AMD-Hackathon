@@ -8,6 +8,7 @@ from uuid import uuid4
 import streamlit as st
 
 from cli.llm_chat import (
+    REQUIRED_BUSINESS_USER_FIELDS,
     REQUIRED_INDIVIDUAL_USER_FIELDS,
     _empty_intake,
     _missing_fields,
@@ -123,11 +124,11 @@ def _process_pending_message() -> None:
     if result["report"]:
         st.session_state.report = result["report"]
         st.session_state.messages.append({"role": "assistant", "content": _report_summary(result["report"])})
-        if _is_individual_policy_report(result["report"]):
+        if _is_policy_report(result["report"]):
             st.session_state.pending_policy_report = result["report"]
             st.session_state.policy_application_approved = False
-            st.session_state.messages.append({"role": "assistant", "content": "Please review the recommended policy. If you approve it, I will collect application details and move to KYC."})
-        elif _is_individual_kyc_report(result["report"]):
+            st.session_state.messages.append({"role": "assistant", "content": _policy_approval_prompt(result["report"])})
+        elif _is_identity_report(result["report"]):
             st.session_state.pending_kyc_report = result["report"]
             st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(result["report"])})
             st.session_state.awaiting_document_followup = not _kyc_details_align(result["report"].json_report)
@@ -158,21 +159,9 @@ def _render_option_cards() -> None:
     st.markdown("#### Choose an option")
     columns = st.columns(min(4, len(options)))
     for index, option in enumerate(options):
-        selected = st.session_state.get("selected_option") == option["value"]
-        button_label = f"{'✓ ' if selected else ''}{option['label']}"
         with columns[index % len(columns)]:
-            if st.button(button_label, key=f"option_{option['value']}", use_container_width=True):
-                st.session_state.selected_option = option["value"]
-                st.rerun()
-
-    selected = st.session_state.get("selected_option")
-    if selected:
-        enter_col, hint_col = st.columns([0.24, 0.76], vertical_alignment="center")
-        with enter_col:
-            if st.button("Enter", type="primary", use_container_width=True):
-                _submit_user_text(_option_user_text(selected))
-        with hint_col:
-            st.caption(f"Selected: {_display_label(selected)}")
+            if st.button(option["label"], key=f"option_{option['value']}", use_container_width=True):
+                _submit_user_text(_option_user_text(option["value"]))
 
 
 def _render_document_uploader() -> None:
@@ -186,7 +175,9 @@ def _render_document_uploader() -> None:
     with st.expander("Upload documents", expanded=True):
         if _is_individual_kyc_intake(st.session_state.collected):
             st.caption("Upload PAN card and Aadhaar card as PDF or image files.")
-        if _is_individual_claim_intake(st.session_state.collected):
+        if _is_business_kyb_intake(st.session_state.collected):
+            st.caption("Upload company PAN, GST certificate, incorporation, board resolution, address, signatory, ownership, and bank proof documents.")
+        if _is_claim_intake(st.session_state.collected):
             st.session_state.collected["incident_description"] = st.text_area(
                 "Incident description",
                 value=st.session_state.collected.get("incident_description") or "",
@@ -200,7 +191,7 @@ def _render_document_uploader() -> None:
         )
         existing_paths = st.session_state.collected.get("file_paths") or []
         ready_for_submit = bool(uploaded_files or existing_paths)
-        if _is_individual_claim_intake(st.session_state.collected):
+        if _is_claim_intake(st.session_state.collected):
             ready_for_submit = ready_for_submit and bool(st.session_state.collected.get("incident_description"))
         if ready_for_submit and st.button("Use uploaded files", type="primary"):
             if uploaded_files:
@@ -217,7 +208,7 @@ def _render_document_uploader() -> None:
             if report:
                 st.session_state.report = report
                 st.session_state.messages.append({"role": "assistant", "content": _report_summary(report)})
-                if _is_individual_kyc_report(report):
+                if _is_identity_report(report):
                     st.session_state.pending_kyc_report = report
                     st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
                     st.session_state.awaiting_document_followup = not _kyc_details_align(report.json_report)
@@ -237,41 +228,32 @@ def _render_document_uploader() -> None:
 
 
 def _render_user_details_form() -> None:
-    if "user details" not in _missing_fields(st.session_state.collected):
+    missing = _missing_fields(st.session_state.collected)
+    if "user details" not in missing and "business details" not in missing:
         return
-    if st.session_state.collected.get("customer_type") != "individual" or not st.session_state.collected.get("workflow_type"):
+    customer_type = st.session_state.collected.get("customer_type")
+    if customer_type not in {"individual", "business"} or not st.session_state.collected.get("workflow_type"):
         return
 
     current = st.session_state.collected.get("user_inputs") or {}
-    with st.expander("User details", expanded=True):
-        with st.form("individual_user_details_form"):
-            name = st.text_input("Name", value=current.get("name", ""))
-            date_of_birth = st.text_input("Date of birth", value=current.get("date_of_birth", ""), placeholder="DD/MM/YYYY")
-            address = st.text_area("Address", value=current.get("address", ""))
-            phone_number = st.text_input("Phone number", value=current.get("phone_number", ""))
-            job = st.text_input("Job", value=current.get("job", ""))
-            annual_income = st.text_input("Annual income", value=current.get("annual_income", ""))
-            submitted = st.form_submit_button("Continue", type="primary")
+    title = "Business details" if customer_type == "business" else "User details"
+    with st.expander(title, expanded=True):
+        with st.form(f"{customer_type}_user_details_form"):
+            if customer_type == "business":
+                details, submitted = _business_details_inputs(current)
+            else:
+                details, submitted = _individual_details_inputs(current)
 
         if not submitted:
             return
 
-        details = {
-            **current,
-            "name": name.strip(),
-            "date_of_birth": date_of_birth.strip(),
-            "address": address.strip(),
-            "phone_number": phone_number.strip(),
-            "job": job.strip(),
-            "annual_income": annual_income.strip(),
-        }
-        validation = _validate_application_details(details)
+        validation = _validate_application_details(details, customer_type)
         if not validation["is_valid"]:
             st.error("Please correct: " + "; ".join(validation["issues"]))
             return
 
         st.session_state.collected["user_inputs"] = validation.get("normalized_details") or details
-        st.session_state.messages.append({"role": "user", "content": "Submitted user details."})
+        st.session_state.messages.append({"role": "user", "content": f"Submitted {title.lower()}."})
         question = next_assistant_question(st.session_state.orchestrator, st.session_state.collected)
         if question:
             st.session_state.messages.append({"role": "assistant", "content": question})
@@ -293,7 +275,11 @@ def _render_policy_application_form() -> None:
         if not st.session_state.policy_application_approved:
             approve_col, decline_col = st.columns(2)
             with approve_col:
-                if st.button("Approve and continue to KYC", type="primary", use_container_width=True):
+                customer_type = payload.get("customer_type") or "individual"
+                identity_workflow = "kyb_validation" if customer_type == "business" else "kyc_validation"
+                identity_case = "kyb" if customer_type == "business" else "kyc"
+                identity_label = "KYB" if customer_type == "business" else "KYC"
+                if st.button(f"Approve and continue to {identity_label}", type="primary", use_container_width=True):
                     st.session_state.policy_application_approved = True
                     details = {
                         **(payload.get("user_inputs") or {}),
@@ -303,15 +289,15 @@ def _render_policy_application_form() -> None:
                     st.session_state.policy_application_approved = False
                     st.session_state.collected = {
                         **_empty_intake(),
-                        "customer_type": "individual",
-                        "workflow_type": "kyc_validation",
-                        "case_type": "kyc",
+                        "customer_type": customer_type,
+                        "workflow_type": identity_workflow,
+                        "case_type": identity_case,
                         "user_inputs": details,
                         "ready_to_run": False,
                     }
                     st.session_state.transcript = []
                     st.session_state.messages.append({"role": "user", "content": "Approved policy recommendation."})
-                    st.session_state.messages.append({"role": "assistant", "content": "Please upload PAN card and Aadhaar card PDF or image files for KYC verification."})
+                    st.session_state.messages.append({"role": "assistant", "content": _identity_upload_prompt(customer_type)})
                     st.rerun()
             with decline_col:
                 if st.button("Do not proceed", use_container_width=True):
@@ -324,19 +310,66 @@ def _render_policy_application_form() -> None:
             return
 
 
+def _individual_details_inputs(current: dict) -> tuple[dict, bool]:
+    name = st.text_input("Name", value=current.get("name", ""))
+    date_of_birth = st.text_input("Date of birth", value=current.get("date_of_birth", ""), placeholder="DD/MM/YYYY")
+    address = st.text_area("Address", value=current.get("address", ""))
+    phone_number = st.text_input("Phone number", value=current.get("phone_number", ""))
+    job = st.text_input("Job", value=current.get("job", ""))
+    annual_income = st.text_input("Annual income", value=current.get("annual_income", ""))
+    submitted = st.form_submit_button("Continue", type="primary")
+    return (
+        {
+            **current,
+            "name": name.strip(),
+            "date_of_birth": date_of_birth.strip(),
+            "address": address.strip(),
+            "phone_number": phone_number.strip(),
+            "job": job.strip(),
+            "annual_income": annual_income.strip(),
+        },
+        submitted,
+    )
+
+
+def _business_details_inputs(current: dict) -> tuple[dict, bool]:
+    company_name = st.text_input("Company name", value=current.get("company_name", ""))
+    business_type = st.text_input("Business type", value=current.get("business_type", ""), placeholder="Manufacturing, retail, services...")
+    registered_address = st.text_area("Registered address", value=current.get("registered_address", ""))
+    contact_person = st.text_input("Contact person", value=current.get("contact_person", ""))
+    contact_phone = st.text_input("Contact phone", value=current.get("contact_phone", ""))
+    annual_turnover = st.text_input("Annual turnover", value=current.get("annual_turnover", ""))
+    employee_count = st.text_input("Employee count", value=current.get("employee_count", ""))
+    submitted = st.form_submit_button("Continue", type="primary")
+    return (
+        {
+            **current,
+            "company_name": company_name.strip(),
+            "business_type": business_type.strip(),
+            "registered_address": registered_address.strip(),
+            "contact_person": contact_person.strip(),
+            "contact_phone": contact_phone.strip(),
+            "annual_turnover": annual_turnover.strip(),
+            "employee_count": employee_count.strip(),
+        },
+        submitted,
+    )
+
+
 def _render_kyc_review() -> None:
     report = st.session_state.get("pending_kyc_report")
     if not report:
         return
     payload = report.json_report
-    with st.expander("KYC details review", expanded=True):
+    identity_label = "KYB" if payload.get("customer_type") == "business" else "KYC"
+    with st.expander(f"{identity_label} details review", expanded=True):
         by_document = payload.get("extracted_by_document") or {}
         if by_document:
             for document_type, fields in by_document.items():
                 st.markdown(f"**{_display_label(document_type).title()}**")
                 st.json(fields)
         else:
-            st.info("No KYC fields were parsed from the uploaded documents.")
+            st.info(f"No {identity_label} fields were parsed from the uploaded documents.")
 
         st.markdown("**Summary**")
         st.write(_kyc_review_summary(report))
@@ -344,12 +377,12 @@ def _render_kyc_review() -> None:
 
         can_approve = _kyc_details_align(payload)
         if not can_approve:
-            st.warning("Some KYC details are missing or inconsistent. Upload corrected documents before approval.")
+            st.warning(f"Some {identity_label} details are missing or inconsistent. Upload corrected documents before approval.")
             return
 
-        if st.button("Approve and store KYC JSON", type="primary", use_container_width=True):
+        if st.button(f"Approve and store {identity_label} JSON", type="primary", use_container_width=True):
             stored_path = _store_kyc_json(payload)
-            st.session_state.messages.append({"role": "assistant", "content": f"KYC details approved and stored as JSON: `{stored_path}`."})
+            st.session_state.messages.append({"role": "assistant", "content": f"{identity_label} details approved and stored as JSON: `{stored_path}`."})
             st.session_state.pending_kyc_report = None
             st.session_state.collected = _empty_intake()
             st.session_state.transcript = []
@@ -377,7 +410,7 @@ def _current_options() -> list[dict[str, str]]:
     customer_type = st.session_state.collected.get("customer_type")
     workflow_type = st.session_state.collected.get("workflow_type")
 
-    if "user details" in missing:
+    if "user details" in missing or "business details" in missing:
         return []
     if "customer_type" in missing:
         return [
@@ -437,6 +470,8 @@ def _report_summary(report) -> str:
         return f"Product discovery is complete. Recommended schemes: {names}."
     if payload.get("customer_type") == "individual" and payload.get("workflow_type") == "kyc_validation":
         return "KYC documents have been parsed. Please review the extracted details before approval."
+    if payload.get("customer_type") == "business" and payload.get("workflow_type") == "kyb_validation":
+        return "KYB documents have been parsed. Please review the extracted business details before approval."
     missing = ", ".join(payload["missing_documents"]) or "none"
     if (
         payload.get("customer_type") == "individual"
@@ -447,28 +482,50 @@ def _report_summary(report) -> str:
     return f"Validation complete. Status: {payload['status']}. Missing documents: {missing}."
 
 
-def _is_individual_policy_report(report) -> bool:
+def _is_policy_report(report) -> bool:
     payload = report.json_report
-    return report.report_type == "new_insurance" and payload.get("customer_type") == "individual"
+    return report.report_type == "new_insurance" and payload.get("customer_type") in {"individual", "business"}
 
 
-def _is_individual_kyc_report(report) -> bool:
+def _policy_approval_prompt(report) -> str:
     payload = report.json_report
-    return report.report_type == "kyc_validation" and payload.get("customer_type") == "individual"
+    identity_label = "KYB" if payload.get("customer_type") == "business" else "KYC"
+    return f"Please review the recommended policy. If you approve it, I will continue to {identity_label} verification."
 
 
-def _is_individual_claim_intake(collected: dict) -> bool:
-    return collected.get("customer_type") == "individual" and collected.get("workflow_type") == "claim_validation"
+def _is_identity_report(report) -> bool:
+    payload = report.json_report
+    return (
+        report.report_type in {"kyc_validation", "kyb_validation"}
+        and payload.get("customer_type") in {"individual", "business"}
+    )
+
+
+def _is_claim_intake(collected: dict) -> bool:
+    return collected.get("workflow_type") == "claim_validation"
 
 
 def _is_individual_kyc_intake(collected: dict) -> bool:
     return collected.get("customer_type") == "individual" and collected.get("workflow_type") == "kyc_validation"
 
 
+def _is_business_kyb_intake(collected: dict) -> bool:
+    return collected.get("customer_type") == "business" and collected.get("workflow_type") == "kyb_validation"
+
+
+def _identity_upload_prompt(customer_type: str) -> str:
+    if customer_type == "business":
+        return (
+            "Please upload business KYB documents: incorporation certificate, company PAN, GST certificate, "
+            "registered address proof, board resolution, authorized signatory ID/address proof, beneficial ownership declaration, and bank proof."
+        )
+    return "Please upload PAN card and Aadhaar card PDF or image files for KYC verification."
+
+
 def _should_continue_document_workflow(report) -> bool:
     payload = report.json_report
     return (
-        payload.get("customer_type") == "individual"
+        payload.get("customer_type") in {"individual", "business"}
         and payload.get("workflow_type") in {"claim_validation", "kyc_validation", "kyb_validation"}
         and payload.get("status") != "Ready for Submission"
     )
@@ -500,7 +557,7 @@ def _followup_prompt(report) -> str:
 
 def _question_needs_options(collected: dict) -> bool:
     missing = _missing_fields(collected)
-    if "user details" in missing:
+    if "user details" in missing or "business details" in missing:
         return False
     return any(
         item in missing
@@ -516,10 +573,11 @@ def _question_needs_options(collected: dict) -> bool:
 
 def _kyc_review_summary(report) -> str:
     payload = report.json_report
+    identity_label = "KYB" if payload.get("customer_type") == "business" else "KYC"
     if _documents_uploaded_but_unparsed(payload):
         return (
-            "The document was uploaded, but no readable KYC fields were extracted. "
-            "Use a clearer image or run the app with a vision-capable model such as Gemma 4 so PAN/Aadhaar images can be parsed directly."
+            f"The document was uploaded, but no readable {identity_label} fields were extracted. "
+            "Use clearer images or run the app with a vision-capable model such as Gemma 4 so identity documents can be parsed directly."
         )
     llm_summary = st.session_state.orchestrator.llm_client.summarize_kyc_fields(
         {
@@ -537,9 +595,9 @@ def _kyc_review_summary(report) -> str:
     issues = payload.get("validation_issues") or []
     field_text = ", ".join(f"{key}: {value}" for key, value in fields.items()) or "no fields parsed"
     if _kyc_details_align(payload):
-        return f"Parsed KYC fields: {field_text}. The available details are consistent and can be approved."
+        return f"Parsed {identity_label} fields: {field_text}. The available details are consistent and can be approved."
     issue_text = "; ".join(issue.get("message", "issue found") for issue in issues) or "missing required details"
-    return f"Parsed KYC fields: {field_text}. Review needed: {issue_text}."
+    return f"Parsed {identity_label} fields: {field_text}. Review needed: {issue_text}."
 
 
 def _documents_uploaded_but_unparsed(payload: dict) -> bool:
@@ -586,7 +644,7 @@ def _kyc_details_align(payload: dict) -> bool:
 
 
 def _store_kyc_json(payload: dict) -> str:
-    output_dir = Path("outputs/kyc_profiles")
+    output_dir = Path("outputs/kyb_profiles" if payload.get("customer_type") == "business" else "outputs/kyc_profiles")
     output_dir.mkdir(parents=True, exist_ok=True)
     report_id = payload.get("report_id") or uuid4().hex[:10]
     target = output_dir / f"{report_id}.json"
@@ -603,10 +661,13 @@ def _store_kyc_json(payload: dict) -> str:
     return str(target)
 
 
-def _validate_application_details(details: dict) -> dict:
-    local_issues = _local_user_detail_issues(details)
+def _validate_application_details(details: dict, customer_type: str) -> dict:
+    local_issues = _local_user_detail_issues(details, customer_type)
     if local_issues:
         return {"is_valid": False, "issues": local_issues, "normalized_details": details}
+
+    if customer_type == "business":
+        return {"is_valid": True, "issues": [], "normalized_details": details}
 
     llm_result = st.session_state.orchestrator.llm_client.validate_application_details(details)
     if isinstance(llm_result, dict) and "is_valid" in llm_result:
@@ -619,15 +680,21 @@ def _validate_application_details(details: dict) -> dict:
     return {"is_valid": True, "issues": [], "normalized_details": details}
 
 
-def _local_user_detail_issues(details: dict) -> list[str]:
+def _local_user_detail_issues(details: dict, customer_type: str) -> list[str]:
     issues = []
-    for field in REQUIRED_INDIVIDUAL_USER_FIELDS:
+    required_fields = REQUIRED_BUSINESS_USER_FIELDS if customer_type == "business" else REQUIRED_INDIVIDUAL_USER_FIELDS
+    for field in required_fields:
         if not str(details.get(field) or "").strip():
             issues.append(f"{_display_label(field)} is required")
-    if details.get("phone_number") and not _valid_phone(str(details.get("phone_number") or "")):
-        issues.append("phone number should be 10 to 15 digits")
-    if details.get("annual_income") and _income_value(details.get("annual_income")) <= 0:
+    phone_field = "contact_phone" if customer_type == "business" else "phone_number"
+    if details.get(phone_field) and not _valid_phone(str(details.get(phone_field) or "")):
+        issues.append(f"{_display_label(phone_field)} should be 10 to 15 digits")
+    if customer_type == "individual" and details.get("annual_income") and _income_value(details.get("annual_income")) <= 0:
         issues.append("annual income should be greater than zero")
+    if customer_type == "business" and details.get("annual_turnover") and _income_value(details.get("annual_turnover")) <= 0:
+        issues.append("annual turnover should be greater than zero")
+    if customer_type == "business" and details.get("employee_count") and _income_value(details.get("employee_count")) <= 0:
+        issues.append("employee count should be greater than zero")
     return issues
 
 
@@ -676,6 +743,12 @@ def _inject_styles() -> None:
             min-height: 3.2rem;
             border-radius: 8px;
             white-space: normal;
+        }
+        div[class*="st-key-option_"] button {
+            min-height: 2.4rem;
+            border-radius: 999px;
+            padding: 0.35rem 0.85rem;
+            font-size: 0.92rem;
         }
         </style>
         """,

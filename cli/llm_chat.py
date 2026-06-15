@@ -12,6 +12,15 @@ from orchestrator.workflow import WorkflowOrchestrator
 from schemas.messages import DocumentPacketMessage, ProductDiscoveryMessage
 
 REQUIRED_INDIVIDUAL_USER_FIELDS = ["name", "date_of_birth", "address", "phone_number", "job", "annual_income"]
+REQUIRED_BUSINESS_USER_FIELDS = [
+    "company_name",
+    "business_type",
+    "registered_address",
+    "contact_person",
+    "contact_phone",
+    "annual_turnover",
+    "employee_count",
+]
 
 
 def run_llm_interactive(orchestrator: WorkflowOrchestrator, print_summary) -> None:
@@ -145,21 +154,22 @@ def _missing_fields(collected: dict[str, Any]) -> list[str]:
     ):
         missing.append("user details")
         return missing
+    if (
+        collected.get("customer_type") == "business"
+        and workflow in {"new_insurance", "claim_validation", "kyb_validation"}
+        and not _has_required_business_user_details(collected.get("user_inputs", {}))
+    ):
+        missing.append("business details")
+        return missing
     if workflow == "new_insurance":
         if not collected.get("insurance_category"):
             missing.append("insurance_category")
-        if collected.get("customer_type") == "business" and not collected.get("user_inputs"):
-            missing.append("basic customer or business details")
         if not collected.get("ready_to_run"):
             missing.append("confirmation to run product discovery")
     elif workflow in {"claim_validation", "kyc_validation", "kyb_validation"}:
         if workflow == "claim_validation" and not collected.get("case_type"):
             missing.append("claim_type")
-        if (
-            collected.get("customer_type") == "individual"
-            and workflow == "claim_validation"
-            and not collected.get("incident_description")
-        ):
+        if workflow == "claim_validation" and not collected.get("incident_description"):
             missing.append("incident description")
         if not collected.get("file_paths"):
             missing.append("document file paths")
@@ -168,6 +178,10 @@ def _missing_fields(collected: dict[str, Any]) -> list[str]:
 
 def _has_required_individual_user_details(user_inputs: dict[str, Any]) -> bool:
     return all(str(user_inputs.get(field) or "").strip() for field in REQUIRED_INDIVIDUAL_USER_FIELDS)
+
+
+def _has_required_business_user_details(user_inputs: dict[str, Any]) -> bool:
+    return all(str(user_inputs.get(field) or "").strip() for field in REQUIRED_BUSINESS_USER_FIELDS)
 
 
 def _merge_intake(current: dict[str, Any], extracted: dict[str, Any]) -> dict[str, Any]:

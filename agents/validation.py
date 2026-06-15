@@ -39,7 +39,7 @@ class ValidationAgent:
                 issues.append({"severity": "low", "field": field_name, "message": f"Missing key field: {field_name}"})
 
         _append_format_issues(canonical, issues)
-        if customer_type == "individual" and workflow_type == "claim_validation":
+        if workflow_type == "claim_validation":
             _append_claim_description_issues(incident_description, canonical, issues)
         if customer_type == "individual" and workflow_type == "kyc_validation" and user_inputs:
             _append_kyc_user_detail_issues(user_inputs, canonical, issues, llm_client)

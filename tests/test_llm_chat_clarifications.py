@@ -27,7 +27,8 @@ class LLMChatClarificationTests(unittest.TestCase):
 
         self.assertIn("health", answer)
         self.assertIn("motor", answer)
-        self.assertIn("personal accident", answer)
+        self.assertIn("life", answer)
+        self.assertNotIn("personal accident", answer)
 
     def test_give_me_options_answers_supported_workflows(self):
         collected = _empty_intake()
@@ -43,6 +44,33 @@ class LLMChatClarificationTests(unittest.TestCase):
         collected["workflow_type"] = "claim_validation"
 
         self.assertEqual(_missing_fields(collected), ["user details"])
+
+    def test_business_details_are_requested_after_action(self):
+        collected = _empty_intake()
+        collected["customer_type"] = "business"
+        collected["workflow_type"] = "kyb_validation"
+
+        self.assertEqual(_missing_fields(collected), ["business details"])
+
+    def test_business_details_unlock_document_upload(self):
+        collected = _empty_intake()
+        collected["customer_type"] = "business"
+        collected["workflow_type"] = "claim_validation"
+        collected["case_type"] = "property_damage"
+        collected["user_inputs"] = {
+            "company_name": "Acme Manufacturing Pvt Ltd",
+            "business_type": "manufacturing",
+            "registered_address": "12 Industrial Estate, Pune",
+            "contact_person": "Nisha Rao",
+            "contact_phone": "9876543210",
+            "annual_turnover": "50000000",
+            "employee_count": "120",
+        }
+
+        self.assertEqual(_missing_fields(collected), ["incident description", "document file paths"])
+        collected["incident_description"] = "Warehouse roof was damaged during heavy rain on 10 May."
+
+        self.assertEqual(_missing_fields(collected), ["document file paths"])
 
 
 if __name__ == "__main__":
