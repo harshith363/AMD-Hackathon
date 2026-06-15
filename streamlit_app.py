@@ -21,7 +21,7 @@ from domain_tools import get_claim_types, get_insurance_categories, get_supporte
 from orchestrator.workflow import WorkflowOrchestrator
 
 DEFAULT_BASE_URL = "http://localhost:8000/v1"
-DEFAULT_MODEL = "Qwen/Qwen2.5-32B-Instruct"
+DEFAULT_MODEL = "mistralai/Ministral-3-14B-Instruct-2512"
 DEFAULT_API_KEY = "EMPTY"
 DEFAULT_TIMEOUT = 20
 
