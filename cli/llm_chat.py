@@ -164,8 +164,6 @@ def _missing_fields(collected: dict[str, Any]) -> list[str]:
     if workflow == "new_insurance":
         if not collected.get("insurance_category"):
             missing.append("insurance_category")
-        if not collected.get("ready_to_run"):
-            missing.append("confirmation to run product discovery")
     elif workflow in {"claim_validation", "kyc_validation", "kyb_validation"}:
         if workflow == "claim_validation" and not collected.get("case_type"):
             missing.append("claim_type")
@@ -208,6 +206,8 @@ def _normalize_intake(collected: dict[str, Any]) -> dict[str, Any]:
     if collected.get("workflow_type") in {"kyc_validation", "kyb_validation"}:
         collected["case_type"] = "kyc" if collected["workflow_type"] == "kyc_validation" else "kyb"
     if collected.get("file_paths"):
+        collected["ready_to_run"] = True
+    if collected.get("workflow_type") == "new_insurance" and collected.get("insurance_category"):
         collected["ready_to_run"] = True
     return collected
 

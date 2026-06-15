@@ -17,7 +17,7 @@ from cli.llm_chat import (
     process_user_message,
     run_ready_workflow,
 )
-from domain_tools import get_claim_types, get_insurance_categories, get_supported_workflows
+from domain_tools import get_claim_types, get_insurance_categories, get_required_documents, get_supported_workflows
 from orchestrator.workflow import WorkflowOrchestrator
 
 DEFAULT_BASE_URL = "http://localhost:8000/v1"
@@ -74,6 +74,7 @@ def _reset_conversation() -> None:
     st.session_state.show_options = False
     st.session_state.awaiting_document_followup = False
     st.session_state.upload_session_id = uuid4().hex[:10]
+    st.session_state.identity_uploads = {}
 
 
 def _render_header() -> None:
@@ -105,6 +106,12 @@ def _process_pending_message() -> None:
     if not pending:
         return
     st.session_state.pending_user_text = None
+    if st.session_state.get("pending_policy_report"):
+        if _policy_approval_requested(pending):
+            _start_identity_workflow_from_policy(st.session_state.pending_policy_report)
+        else:
+            st.session_state.messages.append({"role": "assistant", "content": _answer_policy_question(st.session_state.pending_policy_report, pending)})
+        st.rerun()
     with st.spinner("Thinking..."):
         result = process_user_message(
             st.session_state.orchestrator,
@@ -161,11 +168,14 @@ def _render_option_cards() -> None:
     for index, option in enumerate(options):
         with columns[index % len(columns)]:
             if st.button(option["label"], key=f"option_{option['value']}", use_container_width=True):
-                _submit_user_text(_option_user_text(option["value"]))
+                _select_option(option["value"])
 
 
 def _render_document_uploader() -> None:
     missing = _missing_fields(st.session_state.collected)
+    if _is_identity_intake(st.session_state.collected):
+        _render_identity_document_uploader()
+        return
     if (
         "document file paths" not in missing
         and "incident description" not in missing
@@ -267,37 +277,28 @@ def _render_policy_application_form() -> None:
         return
     with st.expander("Policy application", expanded=True):
         payload = report.json_report
+        best_policy = _best_policy(payload)
         st.caption("Recommended policies")
+        if best_policy:
+            st.markdown(_best_policy_box(best_policy, payload), unsafe_allow_html=True)
         for item in payload["recommendations"]:
-            st.markdown(f"**{item['scheme_name']}**")
-            st.write(item["recommended_next_step"])
+            with st.expander(item["scheme_name"], expanded=item == best_policy):
+                st.markdown(_policy_detail_markdown(item, item == best_policy))
+
+        with st.form("policy_question_form"):
+            question = st.text_input("Ask about these policies", placeholder="Example: why is this better for me?")
+            asked = st.form_submit_button("Ask")
+        if asked and question.strip():
+            st.session_state.messages.append({"role": "user", "content": question.strip()})
+            st.session_state.messages.append({"role": "assistant", "content": _answer_policy_question(report, question.strip())})
+            st.rerun()
 
         if not st.session_state.policy_application_approved:
             approve_col, decline_col = st.columns(2)
             with approve_col:
-                customer_type = payload.get("customer_type") or "individual"
-                identity_workflow = "kyb_validation" if customer_type == "business" else "kyc_validation"
-                identity_case = "kyb" if customer_type == "business" else "kyc"
-                identity_label = "KYB" if customer_type == "business" else "KYC"
+                identity_label = "KYB" if payload.get("customer_type") == "business" else "KYC"
                 if st.button(f"Approve and continue to {identity_label}", type="primary", use_container_width=True):
-                    st.session_state.policy_application_approved = True
-                    details = {
-                        **(payload.get("user_inputs") or {}),
-                        "recommended_policy_ids": [item["scheme_id"] for item in payload["recommendations"]],
-                    }
-                    st.session_state.pending_policy_report = None
-                    st.session_state.policy_application_approved = False
-                    st.session_state.collected = {
-                        **_empty_intake(),
-                        "customer_type": customer_type,
-                        "workflow_type": identity_workflow,
-                        "case_type": identity_case,
-                        "user_inputs": details,
-                        "ready_to_run": False,
-                    }
-                    st.session_state.transcript = []
-                    st.session_state.messages.append({"role": "user", "content": "Approved policy recommendation."})
-                    st.session_state.messages.append({"role": "assistant", "content": _identity_upload_prompt(customer_type)})
+                    _start_identity_workflow_from_policy(report)
                     st.rerun()
             with decline_col:
                 if st.button("Do not proceed", use_container_width=True):
@@ -356,6 +357,47 @@ def _business_details_inputs(current: dict) -> tuple[dict, bool]:
     )
 
 
+def _render_identity_document_uploader() -> None:
+    customer_type = st.session_state.collected.get("customer_type")
+    identity_label = "KYB" if customer_type == "business" else "KYC"
+    required_documents = _required_identity_documents(customer_type)
+    uploads = st.session_state.setdefault("identity_uploads", {})
+
+    with st.expander(f"{identity_label} document checklist", expanded=True):
+        st.markdown(_identity_compliance_rules(customer_type))
+        for doc_type in required_documents:
+            label = _display_label(doc_type).title()
+            existing_path = uploads.get(doc_type)
+            if existing_path:
+                st.success(f"{label} uploaded: `{Path(existing_path).name}`")
+            uploaded_file = st.file_uploader(
+                f"Upload {label}",
+                type=["txt", "pdf", "png", "jpg", "jpeg", "tiff", "bmp", "webp"],
+                key=f"identity_upload_{doc_type}",
+            )
+            if uploaded_file is not None:
+                uploads[doc_type] = _save_uploaded_file_for_doc(uploaded_file, doc_type)
+                st.rerun()
+
+        missing_docs = [doc_type for doc_type in required_documents if not uploads.get(doc_type)]
+        if missing_docs:
+            st.info("Upload all required documents before validation: " + ", ".join(_display_label(item) for item in missing_docs) + ".")
+            return
+
+        if st.button(f"Validate {identity_label} documents", type="primary", use_container_width=True):
+            st.session_state.collected["file_paths"] = [uploads[doc_type] for doc_type in required_documents]
+            st.session_state.collected = _normalize_intake(st.session_state.collected)
+            st.session_state.messages.append({"role": "user", "content": f"Uploaded all required {identity_label} documents."})
+            report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
+            if report:
+                st.session_state.report = report
+                st.session_state.pending_kyc_report = report
+                st.session_state.messages.append({"role": "assistant", "content": _report_summary(report)})
+                st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
+                st.session_state.awaiting_document_followup = not _kyc_details_align(report.json_report)
+            st.rerun()
+
+
 def _render_kyc_review() -> None:
     report = st.session_state.get("pending_kyc_report")
     if not report:
@@ -377,7 +419,8 @@ def _render_kyc_review() -> None:
 
         can_approve = _kyc_details_align(payload)
         if not can_approve:
-            st.warning(f"Some {identity_label} details are missing or inconsistent. Upload corrected documents before approval.")
+            st.warning(f"Some {identity_label} details need another look. You can re-upload only the exact document that needs correction below.")
+            _render_identity_reupload_controls(payload)
             return
 
         if st.button(f"Approve and store {identity_label} JSON", type="primary", use_container_width=True):
@@ -388,6 +431,46 @@ def _render_kyc_review() -> None:
             st.session_state.transcript = []
             st.session_state.awaiting_document_followup = False
             st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
+            st.rerun()
+
+
+def _render_identity_reupload_controls(payload: dict) -> None:
+    customer_type = payload.get("customer_type")
+    identity_label = "KYB" if customer_type == "business" else "KYC"
+    target_docs = _docs_to_reupload(payload)
+    if not target_docs:
+        target_docs = _required_identity_documents(customer_type)
+    st.markdown("**Upload corrected document**")
+    st.caption("Replace only the document named below. I will re-run validation after you upload the corrected file.")
+    for doc_type in target_docs:
+        uploaded_file = st.file_uploader(
+            f"Re-upload {_display_label(doc_type).title()}",
+            type=["txt", "pdf", "png", "jpg", "jpeg", "tiff", "bmp", "webp"],
+            key=f"reupload_{doc_type}",
+        )
+        if uploaded_file is not None:
+            st.session_state.identity_uploads[doc_type] = _save_uploaded_file_for_doc(uploaded_file, doc_type)
+            required_documents = _required_identity_documents(customer_type)
+            st.session_state.collected = {
+                **_empty_intake(),
+                "customer_type": customer_type,
+                "workflow_type": "kyb_validation" if customer_type == "business" else "kyc_validation",
+                "case_type": "kyb" if customer_type == "business" else "kyc",
+                "user_inputs": payload.get("user_inputs") or {},
+                "file_paths": [
+                    st.session_state.identity_uploads[required_doc]
+                    for required_doc in required_documents
+                    if st.session_state.identity_uploads.get(required_doc)
+                ],
+                "ready_to_run": True,
+            }
+            if len(st.session_state.collected["file_paths"]) == len(required_documents):
+                report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
+                if report:
+                    st.session_state.pending_kyc_report = report
+                    st.session_state.report = report
+                    st.session_state.messages.append({"role": "assistant", "content": f"Thanks, I rechecked the updated {identity_label} document set."})
+                    st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
             st.rerun()
 
 
@@ -403,6 +486,57 @@ def _submit_user_text(user_text: str) -> None:
     st.session_state.selected_option = None
     st.session_state.show_options = False
     st.rerun()
+
+
+def _select_option(value: str) -> None:
+    missing = _missing_fields(st.session_state.collected)
+    st.session_state.selected_option = None
+    st.session_state.show_options = False
+    if "customer_type" in missing:
+        st.session_state.collected["customer_type"] = value
+    elif "workflow_type" in missing:
+        st.session_state.collected["workflow_type"] = value
+    elif "insurance_category" in missing:
+        st.session_state.collected["insurance_category"] = value
+    elif "claim_type" in missing:
+        st.session_state.collected["case_type"] = value
+    else:
+        _submit_user_text(_option_user_text(value))
+        return
+
+    st.session_state.collected = _normalize_intake(st.session_state.collected)
+    st.session_state.messages.append({"role": "user", "content": _option_user_text(value)})
+    report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
+    if report:
+        _handle_report(report)
+    else:
+        question = next_assistant_question(st.session_state.orchestrator, st.session_state.collected)
+        if question:
+            st.session_state.messages.append({"role": "assistant", "content": question})
+            st.session_state.show_options = _question_needs_options(st.session_state.collected)
+    st.rerun()
+
+
+def _handle_report(report) -> None:
+    st.session_state.report = report
+    st.session_state.messages.append({"role": "assistant", "content": _report_summary(report)})
+    if _is_policy_report(report):
+        st.session_state.pending_policy_report = report
+        st.session_state.policy_application_approved = False
+        st.session_state.messages.append({"role": "assistant", "content": _policy_approval_prompt(report)})
+    elif _is_identity_report(report):
+        st.session_state.pending_kyc_report = report
+        st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
+        st.session_state.awaiting_document_followup = not _kyc_details_align(report.json_report)
+    elif _should_continue_document_workflow(report):
+        st.session_state.collected = _prepare_followup_intake(st.session_state.collected, report)
+        st.session_state.transcript = []
+        st.session_state.messages.append({"role": "assistant", "content": _followup_prompt(report)})
+    else:
+        st.session_state.collected = _empty_intake()
+        st.session_state.transcript = []
+        st.session_state.selected_option = None
+        st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
 
 
 def _current_options() -> list[dict[str, str]]:
@@ -432,11 +566,6 @@ def _current_options() -> list[dict[str, str]]:
         if isinstance(claim_types, dict):
             claim_types = claim_types.get(customer_type or "individual", [])
         return [{"label": _display_label(value).title(), "value": value} for value in claim_types]
-    if "confirmation to run product discovery" in missing:
-        return [
-            {"label": "Run Product Discovery", "value": "yes"},
-            {"label": "Add More Details", "value": "add more details"},
-        ]
     return []
 
 
@@ -461,6 +590,152 @@ def _save_uploaded_files(uploaded_files) -> list[str]:
         target.write_bytes(uploaded_file.getbuffer())
         paths.append(str(target))
     return paths
+
+
+def _save_uploaded_file_for_doc(uploaded_file, doc_type: str) -> str:
+    output_dir = Path("outputs/uploads") / st.session_state.upload_session_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", uploaded_file.name)
+    target = output_dir / f"{doc_type}_{safe_name}"
+    target.write_bytes(uploaded_file.getbuffer())
+    return str(target)
+
+
+def _required_identity_documents(customer_type: str | None) -> list[str]:
+    workflow_type = "kyb_validation" if customer_type == "business" else "kyc_validation"
+    case_type = "kyb" if customer_type == "business" else "kyc"
+    return get_required_documents(customer_type, workflow_type, case_type)["required_documents"]
+
+
+def _identity_compliance_rules(customer_type: str | None) -> str:
+    if customer_type == "business":
+        return (
+            "**Compliance rules for KYB upload**\n\n"
+            "- Upload one file for every listed business verification document.\n"
+            "- Company name, PAN/GSTIN, registered address, authorized signatory, ownership, and bank details must be readable.\n"
+            "- Documents should belong to the same legal entity and current bank account.\n"
+            "- If a discrepancy is found, re-upload only the exact document named in the review."
+        )
+    return (
+        "**Compliance rules for KYC upload**\n\n"
+        "- Upload one file for PAN and one file for identity proof.\n"
+        "- Name, date of birth, Aadhaar/identity number, address, and phone details must be readable where present.\n"
+        "- User-entered details should match the uploaded documents.\n"
+        "- If a discrepancy is found, re-upload only the exact document named in the review."
+    )
+
+
+def _best_policy(payload: dict) -> dict | None:
+    recommendations = payload.get("recommendations") or []
+    if not recommendations:
+        return None
+    user_inputs = payload.get("user_inputs") or {}
+    return max(recommendations, key=lambda item: _policy_score(item, user_inputs))
+
+
+def _policy_score(policy: dict, user_inputs: dict) -> int:
+    score = len(policy.get("coverage_highlights") or []) * 3
+    eligibility = policy.get("eligibility") or {}
+    lowered_inputs = " ".join(str(value).lower() for value in user_inputs.values())
+    for value in eligibility.values():
+        if isinstance(value, str) and value.lower() in lowered_inputs:
+            score += 4
+        elif value is True:
+            score += 1
+    if policy.get("required_documents"):
+        score += 1
+    return score
+
+
+def _best_policy_box(policy: dict, payload: dict) -> str:
+    reason = _policy_reason(policy, payload.get("user_inputs") or {})
+    return f"""
+    <div class="best-policy-box">
+      <div class="best-policy-label">Best match</div>
+      <h3>{policy["scheme_name"]}</h3>
+      <p>{policy.get("description", "")}</p>
+      <p><strong>Why this one:</strong> {reason}</p>
+    </div>
+    """
+
+
+def _policy_detail_markdown(policy: dict, is_best: bool = False) -> str:
+    highlights = "\n".join(f"- {item}" for item in policy.get("coverage_highlights") or []) or "- Not specified"
+    documents = "\n".join(f"- {_display_label(item)}" for item in policy.get("required_documents") or []) or "- Not specified"
+    eligibility = "\n".join(f"- {_display_label(str(key))}: {value}" for key, value in (policy.get("eligibility") or {}).items()) or "- Standard underwriting applies"
+    best_line = "\n**Recommended choice:** This is the strongest fit based on the submitted details.\n" if is_best else ""
+    return (
+        f"{best_line}\n"
+        f"**Policy ID:** `{policy.get('scheme_id')}`\n\n"
+        f"**Description:** {policy.get('description')}\n\n"
+        f"**Coverage highlights**\n{highlights}\n\n"
+        f"**Eligibility signals**\n{eligibility}\n\n"
+        f"**Documents needed for application**\n{documents}\n\n"
+        f"**Next step:** {policy.get('recommended_next_step')}"
+    )
+
+
+def _policy_reason(policy: dict, user_inputs: dict) -> str:
+    highlights = policy.get("coverage_highlights") or []
+    category_context = ", ".join(highlights[:3]).lower()
+    if user_inputs:
+        return f"it matches the requested insurance type and gives strong coverage around {category_context}, with documents that fit the details already collected."
+    return f"it provides the broadest useful coverage in this category, especially around {category_context}."
+
+
+def _answer_policy_question(report, question: str) -> str:
+    payload = report.json_report
+    best_policy = _best_policy(payload)
+    recommendations = payload.get("recommendations") or []
+    normalized = question.lower()
+    if not recommendations:
+        return "I could not find matching policies for this category. Try another insurance type or update the details."
+    if "why" in normalized or "best" in normalized or "recommend" in normalized:
+        return f"I recommend **{best_policy['scheme_name']}** because {_policy_reason(best_policy, payload.get('user_inputs') or {})}"
+    if "document" in normalized:
+        docs = best_policy.get("required_documents") or []
+        return "For the recommended policy, the application documents are: " + ", ".join(_display_label(doc) for doc in docs) + "."
+    if "cover" in normalized or "coverage" in normalized:
+        return f"**{best_policy['scheme_name']}** covers: " + ", ".join(best_policy.get("coverage_highlights") or []) + "."
+    if "eligib" in normalized:
+        eligibility = best_policy.get("eligibility") or {}
+        return "Eligibility signals for the recommended policy: " + ", ".join(f"{_display_label(str(key))}: {value}" for key, value in eligibility.items()) + "."
+    return (
+        f"The best fit is **{best_policy['scheme_name']}**. "
+        f"{best_policy.get('description')} Next step: {best_policy.get('recommended_next_step')}"
+    )
+
+
+def _policy_approval_requested(text: str) -> bool:
+    normalized = text.lower().strip()
+    return any(phrase in normalized for phrase in ["approve", "proceed", "continue", "looks good", "go ahead"])
+
+
+def _start_identity_workflow_from_policy(report) -> None:
+    payload = report.json_report
+    customer_type = payload.get("customer_type") or "individual"
+    identity_workflow = "kyb_validation" if customer_type == "business" else "kyc_validation"
+    identity_case = "kyb" if customer_type == "business" else "kyc"
+    best_policy = _best_policy(payload)
+    details = {
+        **(payload.get("user_inputs") or {}),
+        "recommended_policy_ids": [item["scheme_id"] for item in payload.get("recommendations") or []],
+        "selected_policy_id": best_policy.get("scheme_id") if best_policy else None,
+    }
+    st.session_state.pending_policy_report = None
+    st.session_state.policy_application_approved = False
+    st.session_state.identity_uploads = {}
+    st.session_state.collected = {
+        **_empty_intake(),
+        "customer_type": customer_type,
+        "workflow_type": identity_workflow,
+        "case_type": identity_case,
+        "user_inputs": details,
+        "ready_to_run": False,
+    }
+    st.session_state.transcript = []
+    st.session_state.messages.append({"role": "user", "content": "Approved policy recommendation."})
+    st.session_state.messages.append({"role": "assistant", "content": _identity_upload_prompt(customer_type)})
 
 
 def _report_summary(report) -> str:
@@ -511,6 +786,10 @@ def _is_individual_kyc_intake(collected: dict) -> bool:
 
 def _is_business_kyb_intake(collected: dict) -> bool:
     return collected.get("customer_type") == "business" and collected.get("workflow_type") == "kyb_validation"
+
+
+def _is_identity_intake(collected: dict) -> bool:
+    return _is_individual_kyc_intake(collected) or _is_business_kyb_intake(collected)
 
 
 def _identity_upload_prompt(customer_type: str) -> str:
@@ -566,7 +845,6 @@ def _question_needs_options(collected: dict) -> bool:
             "workflow_type",
             "insurance_category",
             "claim_type",
-            "confirmation to run product discovery",
         ]
     )
 
@@ -593,11 +871,18 @@ def _kyc_review_summary(report) -> str:
 
     fields = payload.get("extracted_key_fields") or {}
     issues = payload.get("validation_issues") or []
-    field_text = ", ".join(f"{key}: {value}" for key, value in fields.items()) or "no fields parsed"
+    missing = payload.get("missing_documents") or []
+    field_text = ", ".join(f"{_display_label(key)}: {value}" for key, value in fields.items()) or "no fields parsed yet"
     if _kyc_details_align(payload):
-        return f"Parsed {identity_label} fields: {field_text}. The available details are consistent and can be approved."
-    issue_text = "; ".join(issue.get("message", "issue found") for issue in issues) or "missing required details"
-    return f"Parsed {identity_label} fields: {field_text}. Review needed: {issue_text}."
+        return f"Good news, the {identity_label} check looks consistent. I found these details: {field_text}. You can approve and store the verified JSON."
+    issue_text = "; ".join(issue.get("message", "issue found") for issue in issues)
+    missing_text = ", ".join(_display_label(item) for item in missing)
+    review_parts = []
+    if missing_text:
+        review_parts.append(f"missing documents: {missing_text}")
+    if issue_text:
+        review_parts.append(f"details to correct: {issue_text}")
+    return f"I parsed these {identity_label} details: {field_text}. I need a corrected upload because " + "; ".join(review_parts or ["some required details could not be verified"]) + "."
 
 
 def _documents_uploaded_but_unparsed(payload: dict) -> bool:
@@ -641,6 +926,47 @@ def _kyc_details_align(payload: dict) -> bool:
         if issue.get("severity") in {"medium", "high"} or "mismatch" in issue.get("message", "").lower()
     ]
     return not serious_issues
+
+
+def _docs_to_reupload(payload: dict) -> list[str]:
+    required = _required_identity_documents(payload.get("customer_type"))
+    docs = [doc for doc in payload.get("missing_documents") or [] if doc in required]
+    field_to_docs = _identity_field_document_map(payload.get("customer_type"))
+    for issue in payload.get("validation_issues") or []:
+        field = issue.get("field")
+        docs.extend(field_to_docs.get(field, []))
+        message = issue.get("message", "").lower()
+        for doc_type in required:
+            if doc_type.replace("_", " ") in message or doc_type in message:
+                docs.append(doc_type)
+    ordered_unique = []
+    for doc_type in docs:
+        if doc_type in required and doc_type not in ordered_unique:
+            ordered_unique.append(doc_type)
+    return ordered_unique
+
+
+def _identity_field_document_map(customer_type: str | None) -> dict[str, list[str]]:
+    if customer_type == "business":
+        return {
+            "company_name": ["certificate_of_incorporation", "company_pan", "gst_certificate"],
+            "pan_number": ["company_pan"],
+            "gstin": ["gst_certificate"],
+            "registered_address": ["registered_address_proof"],
+            "authorized_signatory": ["board_resolution", "authorized_signatory_id_proof"],
+            "bank_account_holder": ["bank_account_proof"],
+            "user_details": ["certificate_of_incorporation", "registered_address_proof"],
+        }
+    return {
+        "customer_name": ["pan", "identity_proof"],
+        "name": ["pan", "identity_proof"],
+        "date_of_birth": ["identity_proof", "pan"],
+        "pan_number": ["pan"],
+        "aadhaar_number": ["identity_proof"],
+        "address": ["identity_proof"],
+        "phone_number": ["identity_proof"],
+        "user_details": ["pan", "identity_proof"],
+    }
 
 
 def _store_kyc_json(payload: dict) -> str:
@@ -738,6 +1064,30 @@ def _inject_styles() -> None:
         }
         div[data-testid="stChatMessage"] {
             border-radius: 8px;
+        }
+        .best-policy-box {
+            border: 1px solid #7bb7ff;
+            background: #eaf4ff;
+            border-radius: 8px;
+            padding: 1rem 1.1rem;
+            margin: 0.4rem 0 1rem 0;
+            color: #12324f;
+        }
+        .best-policy-box h3 {
+            margin: 0.2rem 0 0.45rem 0;
+            font-size: 1.15rem;
+            letter-spacing: 0;
+        }
+        .best-policy-box p {
+            margin: 0.35rem 0;
+        }
+        .best-policy-label {
+            display: inline-block;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: #075ca8;
+            text-transform: uppercase;
+            letter-spacing: 0;
         }
         div[data-testid="stButton"] button {
             min-height: 3.2rem;
