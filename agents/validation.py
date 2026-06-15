@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import re
 from typing import Any
 
@@ -119,7 +120,7 @@ def _append_kyc_user_detail_issues(
     for user_key, extracted_key in comparisons.items():
         user_value = user_inputs.get(user_key)
         extracted_value = canonical.get(extracted_key)
-        if user_value and extracted_value and not _consistent_text(str(user_value), str(extracted_value)):
+        if user_value and extracted_value and not _consistent_kyc_value(user_key, user_value, extracted_value):
             issues.append(
                 {
                     "severity": "medium",
@@ -127,6 +128,42 @@ def _append_kyc_user_detail_issues(
                     "message": f"{user_key} is not consistent with extracted KYC document details",
                 }
             )
+
+
+def _consistent_kyc_value(field_name: str, left: Any, right: Any) -> bool:
+    if field_name == "date_of_birth":
+        left_date = _normalize_date(left)
+        right_date = _normalize_date(right)
+        if left_date and right_date:
+            return left_date == right_date
+    if field_name in {"pan_number", "aadhaar_number", "phone_number"}:
+        return _normalize_identifier(field_name, left) == _normalize_identifier(field_name, right)
+    return _consistent_text(_flatten_user_value(left), _flatten_user_value(right))
+
+
+def _normalize_date(value: Any) -> str | None:
+    text = str(value).strip()
+    for date_format in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text, date_format).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_identifier(field_name: str, value: Any) -> str:
+    text = str(value)
+    if field_name == "pan_number":
+        return re.sub(r"[^A-Z0-9]", "", text.upper())
+    return re.sub(r"\D", "", text)
+
+
+def _flatten_user_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return " ".join(str(item) for item in value.values() if item)
+    if isinstance(value, list):
+        return " ".join(str(item) for item in value if item)
+    return str(value)
 
 
 def _consistent_text(left: str, right: str) -> bool:

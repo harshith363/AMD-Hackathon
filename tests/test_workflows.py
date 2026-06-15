@@ -5,8 +5,11 @@ from tempfile import TemporaryDirectory
 from document_processing.intake import parse_document
 from document_processing.classifier import classify_document
 from document_processing.extraction import extract_fields
+from agents.reconciliation import ReconciliationAgent
+from agents.validation import ValidationAgent
+from orchestrator.trace import WorkflowTrace
 from orchestrator.workflow import WorkflowOrchestrator
-from schemas.messages import DocumentPacketMessage
+from schemas.messages import ClassifiedDocumentMessage, DocumentPacketMessage, ExtractionResultMessage, ReconciliationMessage
 
 
 def _packet(
@@ -176,6 +179,58 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(document["vision_extracted_fields"]["customer_name"], "Rahul Kumar")
         self.assertEqual(extracted["canonical"]["pan_number"], "ABCDE1234F")
+
+    def test_reconciliation_normalizes_aadhaar_spacing(self):
+        message = ExtractionResultMessage(
+            session_id="SES-TEST",
+            extracted_fields={
+                "canonical": {"aadhaar_number": "1234 5678 9012"},
+                "by_field": {
+                    "aadhaar_number": [
+                        {"value": "1234 5678 9012", "document_type": "identity_proof"},
+                        {"value": "123456789012", "document_type": "identity_proof"},
+                    ]
+                },
+            },
+            evidence={},
+            confidence=0.88,
+        )
+
+        reconciled = ReconciliationAgent().reconcile(message, WorkflowTrace("SES-TEST"))
+
+        self.assertEqual(reconciled.inconsistencies, [])
+
+    def test_kyc_user_date_accepts_iso_against_document_date(self):
+        validation = ValidationAgent().validate(
+            "individual",
+            "kyc_validation",
+            "kyc",
+            ClassifiedDocumentMessage(
+                session_id="SES-TEST",
+                documents=[
+                    {"document_type": "pan"},
+                    {"document_type": "identity_proof"},
+                ],
+            ),
+            ExtractionResultMessage(
+                session_id="SES-TEST",
+                extracted_fields={
+                    "canonical": {
+                        "customer_name": "Harshith Kumar",
+                        "date_of_birth": "03/06/2003",
+                        "pan_number": "ABCDE1234F",
+                        "aadhaar_number": "1234 5678 9012",
+                    }
+                },
+                evidence={},
+                confidence=0.88,
+            ),
+            ReconciliationMessage(session_id="SES-TEST", inconsistencies=[], canonical_fields={}),
+            WorkflowTrace("SES-TEST"),
+            user_inputs={"name": "Harshith Kumar", "date_of_birth": "2003-06-03"},
+        )
+
+        self.assertFalse(any(issue.get("field") == "date_of_birth" for issue in validation.issues))
 
 
 if __name__ == "__main__":

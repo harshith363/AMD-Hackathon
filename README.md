@@ -93,6 +93,16 @@ vllm serve google/gemma-4-E4B-it \
   --trust-remote-code
 ```
 
+```bash
+vllm serve mistralai/Ministral-3-14B-Instruct-2512 \
+  --tokenizer_mode mistral \
+  --config_format mistral \
+  --load_format mistral \
+  --tensor-parallel-size 1 \
+  --enable-auto-tool-choice \
+  --tool-call-parser mistral
+```
+
 Google's Gemma 4 docs list text and image input support, including OCR and document/PDF parsing. The smaller E4B instruction-tuned model is a practical default for the hackathon environment; use `google/gemma-4-12B-it`, `google/gemma-4-26B-A4B-it`, or `google/gemma-4-31B-it` only if your GPU memory allows it.
 
 ## 3. Start The Streamlit App
