@@ -1,0 +1,8 @@
+Policy Copy
+Customer Name: Priya Sharma
+Patient Name: Priya Sharma
+Policy Number: IND-HLT-5501
+Product: Health Secure Plus
+Sum Insured: INR 500000
+Policy Status: Active
+Policy Period: 01/01/2026 to 31/12/2026

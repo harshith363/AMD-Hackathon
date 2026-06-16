@@ -1,0 +1,8 @@
+Forensic Report
+Company Name: Nimbus Retail Pvt Ltd
+Policy Number: CYB-2026-4421
+Incident Date: 03/06/2026
+Prepared By: SecureTrace Digital Forensics
+Finding: Initial access likely occurred through compromised VPN credentials. Malware execution was limited to three application servers.
+Containment: VPN access reset, affected servers isolated, endpoint scans completed.
+Evidence Status: Logs preserved for insurer review.

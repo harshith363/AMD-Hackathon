@@ -1,0 +1,7 @@
+Claim Form
+Company Name: Nimbus Retail Pvt Ltd
+Policy Number: CYB-2026-4421
+Incident Date: 03/06/2026
+Claim Amount: INR 1250000
+Incident Description: Ransomware incident affecting order management and customer support systems.
+Initial Action: Systems isolated and incident response vendor engaged.

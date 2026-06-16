@@ -1,0 +1,7 @@
+Incident Report
+Company Name: Nimbus Retail Pvt Ltd
+Policy Number: CYB-2026-4421
+Incident Date: 03/06/2026
+Incident Type: Ransomware
+Reported By: Head of IT
+Summary: Unauthorized encryption activity detected on production servers. Backups were restored after containment. No confirmed data exfiltration at this stage.

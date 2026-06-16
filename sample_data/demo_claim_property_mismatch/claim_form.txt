@@ -1,0 +1,6 @@
+Claim Form
+Company Name: Acme Components Pvt Ltd
+Policy Number: BUS-PROP-7788
+Incident Date: 14/05/2026
+Claim Amount: INR 450000
+Damage Description: Fire damage to stock room and electrical fixtures.

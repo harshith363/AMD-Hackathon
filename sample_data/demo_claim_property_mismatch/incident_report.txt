@@ -1,0 +1,6 @@
+Incident Report
+Company Name: Acme Components Pvt Ltd
+Policy Number: BUS-PROP-7788
+Incident Date: 14/05/2026
+Incident Type: Electrical short circuit causing localized fire.
+Summary: Fire damaged stock room shelves, wiring, and fixtures.

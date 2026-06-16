@@ -1,0 +1,9 @@
+Discharge Summary
+Hospital: Sunrise Multi Speciality Hospital
+Patient Name: Priya Sharma
+Policy Number: IND-HLT-5501
+Admission Date: 08/05/2026
+Discharge Date: 11/05/2026
+Diagnosis: Acute appendicitis.
+Treatment Given: Laparoscopic appendectomy.
+Doctor Notes: Patient discharged in stable condition with follow-up after seven days.

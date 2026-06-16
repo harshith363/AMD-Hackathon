@@ -1,0 +1,7 @@
+Loss Estimate
+Company Name: Nimbus Retail Pvt Ltd
+Policy Number: CYB-2026-4421
+Incident Date: 03/06/2026
+Claim Amount: INR 1250000
+Estimated Loss: INR 1250000
+Breakup: Incident response INR 350000, system restoration INR 420000, business interruption INR 480000.

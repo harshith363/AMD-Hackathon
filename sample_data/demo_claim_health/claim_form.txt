@@ -1,0 +1,9 @@
+Claim Form
+Customer Name: Priya Sharma
+Patient Name: Priya Sharma
+Policy Number: IND-HLT-5501
+Claim Amount: INR 98000
+Admission Date: 08/05/2026
+Discharge Date: 11/05/2026
+Treatment Summary: Emergency appendectomy and three-day hospitalization.
+Hospital: Sunrise Multi Speciality Hospital

@@ -1,0 +1,7 @@
+Policy Copy
+Insured Company: Acme Components Pvt Ltd
+Company Name: Acme Components Pvt Ltd
+Policy Number: BUS-PROP-7788
+Product: Business Property Shield
+Sum Insured: INR 10000000
+Policy Status: Active

@@ -1,0 +1,8 @@
+Policy Copy
+Insured Company: Nimbus Retail Pvt Ltd
+Company Name: Nimbus Retail Pvt Ltd
+Policy Number: CYB-2026-4421
+Product: Cyber Resilience Cover
+Sum Insured: INR 5000000
+Policy Status: Active
+Policy Period: 01/02/2026 to 31/01/2027

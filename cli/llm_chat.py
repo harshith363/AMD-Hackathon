@@ -149,14 +149,14 @@ def _missing_fields(collected: dict[str, Any]) -> list[str]:
     workflow = collected.get("workflow_type")
     if (
         collected.get("customer_type") == "individual"
-        and workflow in {"new_insurance", "claim_validation", "kyc_validation"}
+        and workflow in {"new_insurance", "kyc_validation"}
         and not _has_required_individual_user_details(collected.get("user_inputs", {}))
     ):
         missing.append("user details")
         return missing
     if (
         collected.get("customer_type") == "business"
-        and workflow in {"new_insurance", "claim_validation", "kyb_validation"}
+        and workflow in {"new_insurance", "kyb_validation"}
         and not _has_required_business_user_details(collected.get("user_inputs", {}))
     ):
         missing.append("business details")
@@ -167,6 +167,8 @@ def _missing_fields(collected: dict[str, Any]) -> list[str]:
     elif workflow in {"claim_validation", "kyc_validation", "kyb_validation"}:
         if workflow == "claim_validation" and not collected.get("case_type"):
             missing.append("claim_type")
+        if workflow == "claim_validation" and not _has_required_claim_details(collected.get("customer_type"), collected.get("user_inputs", {})):
+            missing.append("claim details")
         if workflow == "claim_validation" and not collected.get("incident_description"):
             missing.append("incident description")
         if not collected.get("file_paths"):
@@ -180,6 +182,12 @@ def _has_required_individual_user_details(user_inputs: dict[str, Any]) -> bool:
 
 def _has_required_business_user_details(user_inputs: dict[str, Any]) -> bool:
     return all(str(user_inputs.get(field) or "").strip() for field in REQUIRED_BUSINESS_USER_FIELDS)
+
+
+def _has_required_claim_details(customer_type: str | None, user_inputs: dict[str, Any]) -> bool:
+    required = ["policy_number", "incident_date", "claim_amount"]
+    required.append("company_name" if customer_type == "business" else "patient_name")
+    return all(str(user_inputs.get(field) or "").strip() for field in required)
 
 
 def _merge_intake(current: dict[str, Any], extracted: dict[str, Any]) -> dict[str, Any]:

@@ -1,0 +1,7 @@
+Hospital Bill
+Hospital: Sunrise Multi Speciality Hospital
+Patient Name: Priya Sharma
+Policy Number: IND-HLT-5501
+Total Bill: INR 98000
+Bill Date: 11/05/2026
+Breakup: Room charges INR 30000, surgery INR 52000, medicines INR 16000.

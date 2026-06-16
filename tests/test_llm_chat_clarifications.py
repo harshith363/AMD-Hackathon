@@ -38,12 +38,12 @@ class LLMChatClarificationTests(unittest.TestCase):
         self.assertIn("start policy onboarding", answer)
         self.assertIn("validate claim compliance", answer)
 
-    def test_individual_user_details_are_requested_after_action(self):
+    def test_individual_claim_details_are_requested_after_action(self):
         collected = _empty_intake()
         collected["customer_type"] = "individual"
         collected["workflow_type"] = "claim_validation"
 
-        self.assertEqual(_missing_fields(collected), ["user details"])
+        self.assertEqual(_missing_fields(collected), ["claim_type", "claim details", "incident description", "document file paths"])
 
     def test_business_details_are_requested_after_action(self):
         collected = _empty_intake()
@@ -52,19 +52,16 @@ class LLMChatClarificationTests(unittest.TestCase):
 
         self.assertEqual(_missing_fields(collected), ["business details"])
 
-    def test_business_details_unlock_document_upload(self):
+    def test_business_claim_details_unlock_document_upload(self):
         collected = _empty_intake()
         collected["customer_type"] = "business"
         collected["workflow_type"] = "claim_validation"
         collected["case_type"] = "property_damage"
         collected["user_inputs"] = {
             "company_name": "Acme Manufacturing Pvt Ltd",
-            "business_type": "manufacturing",
-            "registered_address": "12 Industrial Estate, Pune",
-            "contact_person": "Nisha Rao",
-            "contact_phone": "9876543210",
-            "annual_turnover": "50000000",
-            "employee_count": "120",
+            "policy_number": "BUS-PROP-7788",
+            "incident_date": "14/05/2026",
+            "claim_amount": "450000",
         }
 
         self.assertEqual(_missing_fields(collected), ["incident description", "document file paths"])

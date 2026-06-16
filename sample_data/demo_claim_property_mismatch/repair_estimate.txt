@@ -1,0 +1,7 @@
+Repair Estimate
+Company Name: Apex Components Pvt Ltd
+Policy Number: BUS-PROP-9900
+Incident Date: 15/05/2026
+Estimated Repair: INR 900000
+Vendor: SafeBuild Electrical Works
+Scope: Rewiring and stock room restoration.

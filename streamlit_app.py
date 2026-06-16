@@ -39,6 +39,7 @@ def main() -> None:
     _render_user_details_form()
     _render_option_cards()
     _render_document_uploader()
+    _render_claim_review()
     _render_policy_application_form()
     _render_kyc_review()
     _handle_chat_input()
@@ -273,6 +274,7 @@ def _render_claim_document_uploader() -> None:
 
     with st.expander("Claim compliance checklist", expanded=True):
         st.markdown(_claim_compliance_rules(customer_type, case_type, required_documents))
+        _render_claim_details_inputs(customer_type, case_type)
         st.session_state.collected["incident_description"] = st.text_area(
             "Incident description",
             value=st.session_state.collected.get("incident_description") or "",
@@ -294,6 +296,9 @@ def _render_claim_document_uploader() -> None:
                 staged_files[doc_type] = uploaded_file
 
         missing_docs = [doc_type for doc_type in required_documents if not uploads.get(doc_type) and doc_type not in staged_files]
+        if not _has_required_claim_details(customer_type, st.session_state.collected.get("user_inputs") or {}):
+            st.info("Add the claim details before analysis.")
+            return
         if missing_docs:
             st.info("Upload all required claim documents before analysis: " + ", ".join(_display_label(item) for item in missing_docs) + ".")
             return
@@ -313,7 +318,28 @@ def _render_claim_document_uploader() -> None:
             st.rerun()
 
 
+def _render_claim_details_inputs(customer_type: str | None, case_type: str | None) -> None:
+    current = st.session_state.collected.get("user_inputs") or {}
+    updated = dict(current)
+    st.markdown("**Claim details**")
+    if customer_type == "business":
+        updated["company_name"] = st.text_input("Company name", value=current.get("company_name", "")).strip()
+    else:
+        updated["patient_name"] = st.text_input("Patient name", value=current.get("patient_name", "")).strip()
+    updated["policy_number"] = st.text_input("Policy number", value=current.get("policy_number", "")).strip()
+    cols = st.columns(2)
+    with cols[0]:
+        updated["incident_date"] = st.text_input("Incident date", value=current.get("incident_date", ""), placeholder="DD/MM/YYYY").strip()
+    with cols[1]:
+        updated["claim_amount"] = st.text_input("Claim amount", value=current.get("claim_amount", ""), placeholder="Example: 450000").strip()
+    if case_type:
+        updated["claim_type"] = case_type
+    st.session_state.collected["user_inputs"] = updated
+
+
 def _render_user_details_form() -> None:
+    if _is_claim_intake(st.session_state.collected):
+        return
     missing = _missing_fields(st.session_state.collected)
     if "user details" not in missing and "business details" not in missing:
         return
@@ -634,6 +660,87 @@ def _handle_report(report) -> None:
         st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
 
 
+def _render_claim_review() -> None:
+    report = st.session_state.get("report")
+    if not report or not _is_claim_report(report):
+        return
+
+    payload = report.json_report
+    status = payload.get("status", "Unknown")
+    if status == "Ready for Submission":
+        st.success("Claim validation complete. The documents look consistent and the claim is ready for submission.")
+    elif payload.get("missing_documents"):
+        st.warning("Claim validation found missing documents.")
+    else:
+        st.warning("Claim validation found details that need review or correction.")
+
+    with st.expander("Claim validation result", expanded=True):
+        top_cols = st.columns(3)
+        top_cols[0].metric("Status", status)
+        top_cols[1].metric("Confidence", payload.get("confidence", "n/a"))
+        top_cols[2].metric("Human review", "Yes" if payload.get("human_review_required") else "No")
+
+        st.markdown("**Incident summary**")
+        st.info(_claim_incident_summary(payload))
+
+        st.markdown("**Coverage assessment**")
+        coverage = _claim_coverage_assessment(payload)
+        if coverage["covered"]:
+            st.success(coverage["message"])
+        elif coverage["manual_review"]:
+            st.warning(coverage["message"])
+        else:
+            st.error(coverage["message"])
+
+        missing = payload.get("missing_documents") or []
+        if missing:
+            st.markdown("**Missing documents**")
+            for item in missing:
+                st.error(_display_label(item).title())
+
+        issues = payload.get("validation_issues") or []
+        if issues:
+            st.markdown("**Fields needing attention**")
+            for issue in issues:
+                field = _display_label(issue.get("field") or "details").title()
+                message = issue.get("message") or "Needs review"
+                severity = issue.get("severity", "review")
+                values = issue.get("values") or {}
+                detail = f"**{field}**: {message}"
+                if values:
+                    detail += " Values seen: " + ", ".join(str(value) for value in values.keys())
+                if severity in {"high", "medium"}:
+                    st.error(detail)
+                else:
+                    st.warning(detail)
+        else:
+            st.markdown("**Issues**")
+            st.success("No mismatches or missing claim details were found.")
+
+        extracted = payload.get("extracted_key_fields") or {}
+        important_fields = ["company_name", "patient_name", "policy_number", "incident_date", "claim_amount"]
+        shown_fields = {field: extracted.get(field) for field in important_fields if extracted.get(field)}
+        if shown_fields:
+            st.markdown("**Extracted claim details**")
+            st.table(
+                [
+                    {"Field": _display_label(field).title(), "Value": value}
+                    for field, value in shown_fields.items()
+                ]
+            )
+
+        with st.expander("Documents parsed", expanded=False):
+            by_document = payload.get("extracted_by_document") or {}
+            if by_document:
+                for doc_type, fields in by_document.items():
+                    st.markdown(f"**{_display_label(doc_type).title()}**")
+                    st.json(fields)
+            else:
+                st.info("No structured claim fields were extracted from the uploaded files.")
+
+        _render_claim_manual_approval(payload)
+
+
 def _current_options() -> list[dict[str, str]]:
     missing = _missing_fields(st.session_state.collected)
     customer_type = st.session_state.collected.get("customer_type")
@@ -662,6 +769,109 @@ def _current_options() -> list[dict[str, str]]:
             claim_types = claim_types.get(customer_type or "individual", [])
         return [{"label": _display_label(value).title(), "value": value} for value in claim_types]
     return []
+
+
+def _claim_incident_summary(payload: dict) -> str:
+    details = payload.get("user_inputs") or {}
+    extracted = payload.get("extracted_key_fields") or {}
+    name = details.get("company_name") or details.get("patient_name") or extracted.get("company_name") or extracted.get("patient_name") or "The claimant"
+    policy_number = details.get("policy_number") or extracted.get("policy_number") or "the submitted policy"
+    incident_date = details.get("incident_date") or extracted.get("incident_date")
+    claim_amount = details.get("claim_amount") or extracted.get("claim_amount")
+    description = payload.get("incident_description") or "No incident description was provided."
+    pieces = [f"{name} submitted a { _display_label(payload.get('case_type') or 'claim') } claim under policy {policy_number}."]
+    if incident_date:
+        pieces.append(f"The incident date is {incident_date}.")
+    if claim_amount:
+        pieces.append(f"The claimed amount is INR {claim_amount}.")
+    pieces.append(description)
+    return " ".join(pieces)
+
+
+def _claim_coverage_assessment(payload: dict) -> dict[str, object]:
+    status = payload.get("status")
+    case_type = payload.get("case_type")
+    text = " ".join(
+        str(item or "")
+        for item in [
+            payload.get("incident_description"),
+            payload.get("user_inputs") or {},
+            payload.get("extracted_key_fields") or {},
+        ]
+    ).lower()
+    coverage_terms = {
+        "health": ["hospital", "hospitalized", "treatment", "surgery", "appendicitis", "discharge", "bill"],
+        "property_damage": ["fire", "damage", "repair", "stock", "electrical", "warehouse", "fixture", "rain"],
+        "cybersecurity": ["ransomware", "malware", "breach", "vpn", "server", "forensic", "data", "incident response"],
+    }
+    keyword_match = any(term in text for term in coverage_terms.get(case_type, []))
+    if status == "Ready for Submission" and keyword_match:
+        return {
+            "covered": True,
+            "manual_review": False,
+            "message": "The incident appears to fall within the selected policy coverage based on the uploaded documents and claim details.",
+        }
+    if status == "Ready for Submission":
+        return {
+            "covered": True,
+            "manual_review": True,
+            "message": "The documents are consistent and ready for submission. Coverage appears plausible, but the incident wording should be reviewed by a claims handler.",
+        }
+    if payload.get("missing_documents"):
+        return {
+            "covered": False,
+            "manual_review": True,
+            "message": "Coverage cannot be confirmed yet because required documents are missing. The claim can be routed for manual follow-up.",
+        }
+    return {
+        "covered": False,
+        "manual_review": True,
+        "message": "Coverage cannot be automatically confirmed because some document fields do not match. The claim can still proceed through manual approval for demo or operations review.",
+    }
+
+
+def _render_claim_manual_approval(payload: dict) -> None:
+    if payload.get("status") == "Ready for Submission":
+        if st.button("Proceed with claim submission", type="primary", use_container_width=True):
+            stored_path = _store_claim_decision(payload, decision="submitted")
+            st.session_state.messages.append({"role": "assistant", "content": f"Claim marked for submission and stored at `{stored_path}`."})
+            st.rerun()
+        return
+
+    st.markdown("**Manual approval**")
+    st.warning(
+        "This claim is not fully auto-approved. You can proceed for manual approval, but a claims handler may ask for corrected documents or additional information."
+    )
+    acknowledged = st.checkbox(
+        "I understand this claim needs manual processing.",
+        key=f"claim_manual_ack_{payload.get('report_id')}",
+    )
+    if st.button("Proceed with manual approval", type="primary", use_container_width=True, disabled=not acknowledged):
+        stored_path = _store_claim_decision(payload, decision="manual_approval")
+        st.session_state.messages.append({"role": "assistant", "content": f"Claim routed for manual approval and stored at `{stored_path}`."})
+        st.rerun()
+
+
+def _store_claim_decision(payload: dict, *, decision: str) -> str:
+    output_dir = Path("outputs/claim_decisions")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_id = payload.get("report_id") or uuid4().hex[:10]
+    target = output_dir / f"{report_id}_{decision}.json"
+    stored_payload = {
+        "report_id": payload.get("report_id"),
+        "decision": decision,
+        "status": payload.get("status"),
+        "customer_type": payload.get("customer_type"),
+        "case_type": payload.get("case_type"),
+        "incident_summary": _claim_incident_summary(payload),
+        "coverage_assessment": _claim_coverage_assessment(payload),
+        "missing_documents": payload.get("missing_documents") or [],
+        "validation_issues": payload.get("validation_issues") or [],
+        "extracted_key_fields": payload.get("extracted_key_fields") or {},
+        "user_inputs": payload.get("user_inputs") or {},
+    }
+    target.write_text(json.dumps(stored_payload, indent=2), encoding="utf-8")
+    return str(target)
 
 
 def _option_user_text(value: str) -> str:
@@ -1003,7 +1213,16 @@ def _report_summary(report) -> str:
         and payload.get("workflow_type") == "claim_validation"
         and payload.get("status") == "Ready for Submission"
     ):
-        return "Claim validation is complete. Everything looks fine, and the claim has been generated."
+        return "Claim validation is complete. The uploaded documents are consistent and the claim is ready for submission."
+    if payload.get("workflow_type") == "claim_validation":
+        issue_count = len(payload.get("validation_issues") or [])
+        status = payload.get("status", "Unknown")
+        coverage = _claim_coverage_assessment(payload)["message"]
+        if status == "Ready for Submission":
+            return f"Claim validation is complete. The uploaded documents are consistent and the claim is ready for submission. {coverage}"
+        if payload.get("missing_documents"):
+            return f"Claim validation is complete. Status: {status}. Missing documents: {missing}. {coverage}"
+        return f"Claim validation is complete. Status: {status}. Fields needing attention: {issue_count}. {coverage}"
     return f"Validation complete. Status: {payload['status']}. Missing documents: {missing}."
 
 
@@ -1024,6 +1243,11 @@ def _is_identity_report(report) -> bool:
         report.report_type in {"kyc_validation", "kyb_validation"}
         and payload.get("customer_type") in {"individual", "business"}
     )
+
+
+def _is_claim_report(report) -> bool:
+    payload = report.json_report
+    return report.report_type == "claim_validation" and payload.get("workflow_type") == "claim_validation"
 
 
 def _is_claim_intake(collected: dict) -> bool:
@@ -1346,6 +1570,12 @@ def _local_user_detail_issues(details: dict, customer_type: str) -> list[str]:
     if customer_type == "business" and details.get("employee_count") and _income_value(details.get("employee_count")) <= 0:
         issues.append("employee count should be greater than zero")
     return issues
+
+
+def _has_required_claim_details(customer_type: str | None, details: dict) -> bool:
+    required = ["policy_number", "incident_date", "claim_amount"]
+    required.append("company_name" if customer_type == "business" else "patient_name")
+    return all(str(details.get(field) or "").strip() for field in required)
 
 
 def _valid_phone(value: str) -> bool:

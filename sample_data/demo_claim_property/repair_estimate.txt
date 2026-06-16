@@ -1,0 +1,7 @@
+Repair Estimate
+Company Name: Acme Components Pvt Ltd
+Policy Number: BUS-PROP-7788
+Incident Date: 14/05/2026
+Estimated Repair: INR 450000
+Vendor: SafeBuild Electrical Works
+Scope: Rewiring, replacement of damaged fixtures, wall repainting, and stock room restoration.
