@@ -174,8 +174,10 @@ class VLLMClient:
         prompt = (
             "Compare user-provided details with fields extracted from PAN/Aadhaar/identity documents. "
             "The match does not need to be exact, but it must be consistent. Return JSON only with "
-            "keys is_consistent, issues, and confidence. Treat abbreviations, casing, and minor spelling "
-            "differences as acceptable.\n\n"
+            "keys is_consistent, match_level, issues, and confidence. Use match_level='consistent' when "
+            "details agree, 'partial' when there is some overlap or a plausible near match that should be "
+            "reviewed by a human, and 'clear_mismatch' when the values are completely different and corrected "
+            "documents should be requested. Treat abbreviations, casing, and minor spelling differences as acceptable.\n\n"
             f"User details: {json.dumps(user_details, indent=2)}\n"
             f"Extracted fields: {json.dumps(extracted_fields, indent=2)}"
         )

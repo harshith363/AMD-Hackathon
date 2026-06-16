@@ -105,8 +105,9 @@ def _append_kyc_user_detail_issues(
         verification = llm_client.verify_identity_consistency(user_inputs, canonical)
     if isinstance(verification, dict):
         if verification.get("is_consistent") is False:
+            severity = _llm_consistency_severity(verification)
             for issue in verification.get("issues") or ["User details are not consistent with KYC documents"]:
-                issues.append({"severity": "medium", "field": "user_details", "message": str(issue)})
+                issues.append({"severity": severity, "field": "user_details", "message": str(issue)})
         return
 
     comparisons = {
@@ -120,25 +121,55 @@ def _append_kyc_user_detail_issues(
     for user_key, extracted_key in comparisons.items():
         user_value = user_inputs.get(user_key)
         extracted_value = canonical.get(extracted_key)
-        if user_value and extracted_value and not _consistent_kyc_value(user_key, user_value, extracted_value):
+        if user_value and extracted_value:
+            consistency = _kyc_consistency_level(user_key, user_value, extracted_value)
+            if consistency == "consistent":
+                continue
+            severity = "review" if consistency == "partial" else "high"
+            action = "should be reviewed by a human" if consistency == "partial" else "requires a corrected document upload"
             issues.append(
                 {
-                    "severity": "medium",
+                    "severity": severity,
                     "field": user_key,
-                    "message": f"{user_key} is not consistent with extracted KYC document details",
+                    "message": f"{user_key} is not consistent with extracted KYC document details and {action}",
                 }
             )
 
 
 def _consistent_kyc_value(field_name: str, left: Any, right: Any) -> bool:
+    return _kyc_consistency_level(field_name, left, right) == "consistent"
+
+
+def _kyc_consistency_level(field_name: str, left: Any, right: Any) -> str:
     if field_name == "date_of_birth":
         left_date = _normalize_date(left)
         right_date = _normalize_date(right)
         if left_date and right_date:
-            return left_date == right_date
+            return "consistent" if left_date == right_date else "clear_mismatch"
     if field_name in {"pan_number", "aadhaar_number", "phone_number"}:
-        return _normalize_identifier(field_name, left) == _normalize_identifier(field_name, right)
-    return _consistent_text(_flatten_user_value(left), _flatten_user_value(right))
+        return "consistent" if _normalize_identifier(field_name, left) == _normalize_identifier(field_name, right) else "clear_mismatch"
+    score = _text_overlap_score(_flatten_user_value(left), _flatten_user_value(right))
+    if score >= 0.5:
+        return "consistent"
+    if score > 0:
+        return "partial"
+    return "clear_mismatch"
+
+
+def _llm_consistency_severity(verification: dict[str, Any]) -> str:
+    match_level = str(verification.get("match_level") or verification.get("consistency_level") or "").lower()
+    if match_level in {"partial", "possible", "near_match", "near match", "review"}:
+        return "review"
+    if match_level in {"clear_mismatch", "mismatch", "not_consistent", "not consistent"}:
+        return "high"
+    confidence = verification.get("confidence")
+    try:
+        confidence_value = float(confidence)
+    except (TypeError, ValueError):
+        confidence_value = None
+    if confidence_value is not None and 0.35 <= confidence_value < 0.75:
+        return "review"
+    return "high"
 
 
 def _normalize_date(value: Any) -> str | None:
@@ -167,12 +198,18 @@ def _flatten_user_value(value: Any) -> str:
 
 
 def _consistent_text(left: str, right: str) -> bool:
+    return _text_overlap_score(left, right) >= 0.5
+
+
+def _text_overlap_score(left: str, right: str) -> float:
     left_norm = set(_normalize_for_match(left).split())
     right_norm = set(_normalize_for_match(right).split())
     if not left_norm or not right_norm:
-        return False
+        return 0.0
     overlap = left_norm & right_norm
-    return bool(overlap) and len(overlap) / min(len(left_norm), len(right_norm)) >= 0.5
+    if not overlap:
+        return 0.0
+    return len(overlap) / min(len(left_norm), len(right_norm))
 
 
 def _normalize_for_match(value: str) -> str:
@@ -181,9 +218,11 @@ def _normalize_for_match(value: str) -> str:
 
 def _decide_status(missing_documents: list[str], issues: list[dict[str, Any]]) -> tuple[str, bool, str]:
     if any(issue.get("severity") == "high" for issue in issues):
-        return "Human Review Required", True, "Escalate to a human reviewer with extracted evidence."
+        return "Needs Correction", False, "Ask the customer to upload corrected documents for clearly inconsistent details."
     if missing_documents:
         return "Needs Additional Documents", False, "Request the missing mandatory documents from the customer."
+    if any(issue.get("severity") == "review" for issue in issues):
+        return "Human Review Required", True, "Send the partially consistent details to a human reviewer with extracted evidence."
     if any(issue.get("severity") == "medium" for issue in issues):
         return "Needs Correction", False, "Ask the customer to correct inconsistent or invalid details."
     if not issues:

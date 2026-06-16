@@ -249,6 +249,88 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertFalse(any(issue.get("field") == "date_of_birth" for issue in validation.issues))
 
+    def test_kyc_partial_consistency_requires_human_review(self):
+        validation = ValidationAgent().validate(
+            "individual",
+            "kyc_validation",
+            "kyc",
+            ClassifiedDocumentMessage(
+                session_id="SES-TEST",
+                documents=[
+                    {"document_type": "pan"},
+                    {"document_type": "identity_proof"},
+                ],
+            ),
+            ExtractionResultMessage(
+                session_id="SES-TEST",
+                extracted_fields={
+                    "canonical": {
+                        "customer_name": "Rohan Mehta",
+                        "date_of_birth": "05/03/1992",
+                        "pan_number": "AABPM1234C",
+                        "aadhaar_number": "1234 5678 9012",
+                        "address": "77 Park Street Mumbai",
+                        "phone_number": "9876543210",
+                    }
+                },
+                evidence={},
+                confidence=0.88,
+            ),
+            ReconciliationMessage(session_id="SES-TEST", inconsistencies=[], canonical_fields={}),
+            WorkflowTrace("SES-TEST"),
+            user_inputs={
+                "name": "Rohan Mehta",
+                "date_of_birth": "05/03/1992",
+                "address": "77 Lake Road Delhi",
+                "phone_number": "9876543210",
+            },
+        )
+
+        self.assertEqual(validation.status, "Human Review Required")
+        self.assertTrue(validation.human_review_required)
+        self.assertTrue(any(issue.get("severity") == "review" for issue in validation.issues))
+
+    def test_kyc_clear_inconsistency_requests_corrected_document(self):
+        validation = ValidationAgent().validate(
+            "individual",
+            "kyc_validation",
+            "kyc",
+            ClassifiedDocumentMessage(
+                session_id="SES-TEST",
+                documents=[
+                    {"document_type": "pan"},
+                    {"document_type": "identity_proof"},
+                ],
+            ),
+            ExtractionResultMessage(
+                session_id="SES-TEST",
+                extracted_fields={
+                    "canonical": {
+                        "customer_name": "Rohan Mehta",
+                        "date_of_birth": "05/03/1992",
+                        "pan_number": "AABPM1234C",
+                        "aadhaar_number": "1234 5678 9012",
+                        "address": "77 Park Street Mumbai",
+                        "phone_number": "9876543210",
+                    }
+                },
+                evidence={},
+                confidence=0.88,
+            ),
+            ReconciliationMessage(session_id="SES-TEST", inconsistencies=[], canonical_fields={}),
+            WorkflowTrace("SES-TEST"),
+            user_inputs={
+                "name": "Ananya Sharma",
+                "date_of_birth": "05/03/1992",
+                "address": "221B Baker London",
+                "phone_number": "9876543210",
+            },
+        )
+
+        self.assertEqual(validation.status, "Needs Correction")
+        self.assertFalse(validation.human_review_required)
+        self.assertTrue(any(issue.get("severity") == "high" for issue in validation.issues))
+
 
 if __name__ == "__main__":
     unittest.main()

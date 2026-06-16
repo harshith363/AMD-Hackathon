@@ -488,12 +488,36 @@ def _render_kyc_review() -> None:
 
         can_approve = _kyc_details_align(payload)
         if not can_approve:
+            if _requires_human_review_without_reupload(payload):
+                st.warning(
+                    f"The {identity_label} details show partial consistency. You can proceed, but an agent may contact the user for additional information."
+                )
+                _render_identity_review_findings(payload)
+                if st.button(f"Proceed with {identity_label} warning", type="primary", use_container_width=True):
+                    stored_path = _store_kyc_json(payload, approved=False)
+                    st.session_state.messages.append(
+                        {
+                            "role": "assistant",
+                            "content": (
+                                f"{identity_label} documents were accepted for human review and stored as JSON: `{stored_path}`. "
+                                "An agent may request additional information before final approval."
+                            ),
+                        }
+                    )
+                    st.session_state.pending_kyc_report = None
+                    st.session_state.collected = _empty_intake()
+                    st.session_state.transcript = []
+                    st.session_state.awaiting_document_followup = False
+                    st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
+                    st.rerun()
+                return
             st.warning(f"Some {identity_label} details need another look. You can re-upload only the exact document that needs correction below.")
+            _render_identity_review_findings(payload)
             _render_identity_reupload_controls(payload)
             return
 
         if st.button(f"Approve and store {identity_label} JSON", type="primary", use_container_width=True):
-            stored_path = _store_kyc_json(payload)
+            stored_path = _store_kyc_json(payload, approved=True)
             st.session_state.messages.append({"role": "assistant", "content": f"{identity_label} details approved and stored as JSON: `{stored_path}`."})
             st.session_state.pending_kyc_report = None
             st.session_state.collected = _empty_intake()
@@ -1084,6 +1108,9 @@ def _kyc_review_summary(report) -> str:
     field_text = ", ".join(f"{_display_label(key)}: {value}" for key, value in fields.items()) or "no fields parsed yet"
     if _kyc_details_align(payload):
         return f"Good news, the {identity_label} check looks consistent. I found these details: {field_text}. You can approve and store the verified JSON."
+    if _requires_human_review_without_reupload(payload):
+        issue_text = "; ".join(issue.get("message", "needs review") for issue in issues) or "some details are only partially consistent"
+        return f"I parsed these {identity_label} details: {field_text}. Some details look partially consistent, so I marked this for human review instead of asking for another upload: {issue_text}."
     issue_text = "; ".join(issue.get("message", "issue found") for issue in issues)
     missing_text = ", ".join(_display_label(item) for item in missing)
     review_parts = []
@@ -1126,8 +1153,55 @@ def _render_document_debug(payload: dict) -> None:
                 st.warning("; ".join(str(item) for item in warnings))
 
 
+def _render_identity_review_findings(payload: dict) -> None:
+    mismatches = _identity_mismatch_issues(payload)
+    unavailable = _identity_unavailable_info(payload)
+
+    if mismatches:
+        st.markdown("**Fields needing attention**")
+        for issue in mismatches:
+            field = _display_label(issue.get("field") or "details")
+            severity = issue.get("severity", "review")
+            message = issue.get("message", "Needs review")
+            if severity == "high":
+                st.error(f"**{field.title()}**: {message}")
+            else:
+                st.warning(f"**{field.title()}**: {message}")
+
+    if unavailable:
+        st.markdown("**Information not fully captured**")
+        for item in unavailable:
+            st.info(item)
+
+
+def _identity_mismatch_issues(payload: dict) -> list[dict]:
+    return [
+        issue
+        for issue in payload.get("validation_issues") or []
+        if issue.get("severity") in {"review", "medium", "high"} or "mismatch" in issue.get("message", "").lower()
+    ]
+
+
+def _identity_unavailable_info(payload: dict) -> list[str]:
+    unavailable = []
+    missing_documents = payload.get("missing_documents") or []
+    if missing_documents:
+        unavailable.append("Missing documents: " + ", ".join(_display_label(item) for item in missing_documents) + ".")
+
+    for issue in payload.get("validation_issues") or []:
+        if str(issue.get("message", "")).lower().startswith("missing key field"):
+            unavailable.append(_display_label(issue.get("field", "field")).title() + " could not be extracted clearly.")
+
+    if _documents_uploaded_but_unparsed(payload):
+        unavailable.append("The uploaded file was received, but no readable identity fields could be extracted.")
+
+    return unavailable
+
+
 def _kyc_details_align(payload: dict) -> bool:
     if payload.get("missing_documents"):
+        return False
+    if payload.get("status") == "Human Review Required":
         return False
     serious_issues = [
         issue
@@ -1137,11 +1211,22 @@ def _kyc_details_align(payload: dict) -> bool:
     return not serious_issues
 
 
+def _requires_human_review_without_reupload(payload: dict) -> bool:
+    if payload.get("missing_documents"):
+        return False
+    issues = payload.get("validation_issues") or []
+    if any(issue.get("severity") == "high" for issue in issues):
+        return False
+    return payload.get("status") == "Human Review Required" or any(issue.get("severity") == "review" for issue in issues)
+
+
 def _docs_to_reupload(payload: dict) -> list[str]:
     required = _required_identity_documents(payload.get("customer_type"))
     docs = [doc for doc in payload.get("missing_documents") or [] if doc in required]
     field_to_docs = _identity_field_document_map(payload.get("customer_type"))
     for issue in payload.get("validation_issues") or []:
+        if issue.get("severity") == "review":
+            continue
         field = issue.get("field")
         docs.extend(field_to_docs.get(field, []))
         message = issue.get("message", "").lower()
@@ -1178,7 +1263,7 @@ def _identity_field_document_map(customer_type: str | None) -> dict[str, list[st
     }
 
 
-def _store_kyc_json(payload: dict) -> str:
+def _store_kyc_json(payload: dict, *, approved: bool) -> str:
     output_dir = Path("outputs/kyb_profiles" if payload.get("customer_type") == "business" else "outputs/kyc_profiles")
     output_dir.mkdir(parents=True, exist_ok=True)
     report_id = payload.get("report_id") or uuid4().hex[:10]
@@ -1186,10 +1271,14 @@ def _store_kyc_json(payload: dict) -> str:
     stored_payload = {
         "report_id": payload.get("report_id"),
         "customer_type": payload.get("customer_type"),
-        "approved": True,
+        "approved": approved,
+        "status": payload.get("status"),
+        "human_review_required": payload.get("human_review_required"),
         "user_inputs": payload.get("user_inputs") or {},
         "extracted_by_document": payload.get("extracted_by_document") or {},
         "extracted_key_fields": payload.get("extracted_key_fields") or {},
+        "validation_issues": payload.get("validation_issues") or [],
+        "missing_documents": payload.get("missing_documents") or [],
         "summary": _kyc_review_summary(st.session_state.pending_kyc_report),
     }
     target.write_text(json.dumps(stored_payload, indent=2), encoding="utf-8")
