@@ -31,14 +31,16 @@ class ValidationAgent:
         received_types = {doc.get("document_type") for doc in classified.documents}
         missing_documents = [doc for doc in rule["required_documents"] if doc not in received_types]
         issues: list[dict[str, Any]] = []
-        issues.extend(reconciliation.inconsistencies)
 
         canonical = extraction.extracted_fields.get("canonical", {})
+        issues.extend(_workflow_reconciliation_issues(customer_type, workflow_type, reconciliation.inconsistencies))
         for field_name in rule.get("field_checks", []):
+            if _is_optional_identity_field(customer_type, workflow_type, field_name):
+                continue
             if field_name not in canonical:
                 issues.append({"severity": "low", "field": field_name, "message": f"Missing key field: {field_name}"})
 
-        _append_format_issues(canonical, issues)
+        _append_format_issues(customer_type, workflow_type, canonical, issues)
         if workflow_type == "claim_validation":
             _append_claim_description_issues(incident_description, canonical, issues)
         if customer_type == "individual" and workflow_type == "kyc_validation" and user_inputs:
@@ -63,10 +65,64 @@ def _select_rule(customer_type: str, workflow_type: str, case_type: str) -> dict
     return KYC_RULES["business" if workflow_type == "kyb_validation" else "individual"]
 
 
-def _append_format_issues(canonical: dict[str, Any], issues: list[dict[str, Any]]) -> None:
+def _workflow_reconciliation_issues(
+    customer_type: str,
+    workflow_type: str,
+    inconsistencies: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    relevant_fields = _workflow_relevant_fields(customer_type, workflow_type)
+    filtered = []
+    for issue in inconsistencies:
+        field = issue.get("field")
+        if field not in relevant_fields:
+            continue
+        if workflow_type == "kyc_validation" and field in {"customer_name", "address"}:
+            filtered.append(_identity_reconciliation_issue(issue))
+        else:
+            filtered.append(issue)
+    return filtered
+
+
+def _workflow_relevant_fields(customer_type: str, workflow_type: str) -> set[str]:
+    if workflow_type == "kyc_validation":
+        return {"customer_name", "date_of_birth", "pan_number", "aadhaar_number", "address"}
+    if workflow_type == "kyb_validation":
+        return {"company_name", "pan_number", "gstin", "registered_address", "authorized_signatory", "bank_account_holder"}
+    if workflow_type == "claim_validation":
+        fields = {"policy_number", "incident_date", "claim_amount"}
+        if customer_type == "individual":
+            fields.update({"patient_name"})
+        else:
+            fields.update({"company_name"})
+        return fields
+    return set()
+
+
+def _identity_reconciliation_issue(issue: dict[str, Any]) -> dict[str, Any]:
+    values = list((issue.get("values") or {}).keys())
+    if len(values) < 2:
+        return issue
+    consistency = _kyc_consistency_level(issue.get("field", ""), values[0], values[1])
+    updated = dict(issue)
+    if consistency in {"consistent", "partial"}:
+        updated["severity"] = "review"
+        updated["message"] = f"{issue.get('field')} is largely consistent across documents but should be reviewed"
+    else:
+        updated["severity"] = "high"
+        updated["message"] = f"{issue.get('field')} is clearly inconsistent across documents"
+    return updated
+
+
+def _is_optional_identity_field(customer_type: str, workflow_type: str, field_name: str) -> bool:
+    return customer_type == "individual" and workflow_type == "kyc_validation" and field_name == "phone_number"
+
+
+def _append_format_issues(customer_type: str, workflow_type: str, canonical: dict[str, Any], issues: list[dict[str, Any]]) -> None:
     pan = canonical.get("pan_number")
     if pan and not re.fullmatch(r"[A-Z]{5}[0-9]{4}[A-Z]", pan):
-        issues.append({"severity": "medium", "field": "pan_number", "message": "PAN format is invalid"})
+        severity = "review" if workflow_type == "kyc_validation" else "medium"
+        message = "PAN format could not be verified and may require manual review" if severity == "review" else "PAN format is invalid"
+        issues.append({"severity": severity, "field": "pan_number", "message": message})
     gstin = canonical.get("gstin")
     if gstin and not re.fullmatch(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]", gstin):
         issues.append({"severity": "medium", "field": "gstin", "message": "GSTIN format is invalid"})

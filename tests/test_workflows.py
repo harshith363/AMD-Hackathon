@@ -70,8 +70,9 @@ class WorkflowTests(unittest.TestCase):
         report = orchestrator.run_document_validation(
             _packet(orchestrator, "individual", "kyc_validation", "kyc", "sample_data/individual_kyc_mismatch")
         )
-        self.assertIn(report.json_report["status"], {"Needs Correction", "Human Review Required"})
-        self.assertTrue(any("customer_name mismatch" in issue["message"] for issue in report.json_report["validation_issues"]))
+        self.assertEqual(report.json_report["status"], "Human Review Required")
+        self.assertTrue(any(issue.get("field") == "customer_name" for issue in report.json_report["validation_issues"]))
+        self.assertFalse(any(issue.get("field") in {"patient_name", "insured_name", "employee_name"} for issue in report.json_report["validation_issues"]))
 
     def test_individual_claim_requires_incident_description(self):
         orchestrator = WorkflowOrchestrator()

@@ -477,6 +477,9 @@ def _render_kyc_review() -> None:
         by_document = payload.get("extracted_by_document") or {}
         if by_document:
             for document_type, fields in by_document.items():
+                fields = _identity_display_fields(payload, fields)
+                if not fields:
+                    continue
                 st.markdown(f"**{_display_label(document_type).title()}**")
                 st.json(fields)
         else:
@@ -493,27 +496,13 @@ def _render_kyc_review() -> None:
                     f"The {identity_label} details show partial consistency. You can proceed, but an agent may contact the user for additional information."
                 )
                 _render_identity_review_findings(payload)
-                if st.button(f"Proceed with {identity_label} warning", type="primary", use_container_width=True):
-                    stored_path = _store_kyc_json(payload, approved=False)
-                    st.session_state.messages.append(
-                        {
-                            "role": "assistant",
-                            "content": (
-                                f"{identity_label} documents were accepted for human review and stored as JSON: `{stored_path}`. "
-                                "An agent may request additional information before final approval."
-                            ),
-                        }
-                    )
-                    st.session_state.pending_kyc_report = None
-                    st.session_state.collected = _empty_intake()
-                    st.session_state.transcript = []
-                    st.session_state.awaiting_document_followup = False
-                    st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
-                    st.rerun()
+                _render_manual_processing_proceed(payload, identity_label)
                 return
             st.warning(f"Some {identity_label} details need another look. You can re-upload only the exact document that needs correction below.")
             _render_identity_review_findings(payload)
             _render_identity_reupload_controls(payload)
+            st.warning("For demo/manual processing, you can proceed without re-uploading. This does not mark the documents as fully valid.")
+            _render_manual_processing_proceed(payload, identity_label)
             return
 
         if st.button(f"Approve and store {identity_label} JSON", type="primary", use_container_width=True):
@@ -549,6 +538,34 @@ def _render_identity_reupload_controls(payload: dict) -> None:
         for doc_type, uploaded_file in staged_files.items():
             st.session_state.identity_uploads[doc_type] = _save_uploaded_file_for_doc(uploaded_file, doc_type)
         _run_identity_validation(customer_type, payload_user_inputs=payload.get("user_inputs") or {}, correction=True)
+        st.rerun()
+
+
+def _render_manual_processing_proceed(payload: dict, identity_label: str) -> None:
+    st.markdown("**Manual processing warning**")
+    st.caption(
+        "The uploaded documents are not completely valid. Proceeding may require the user to provide additional information when an agent contacts them."
+    )
+    acknowledged = st.checkbox(
+        "I understand this case may need manual processing and follow-up information.",
+        key=f"manual_processing_ack_{payload.get('report_id')}",
+    )
+    if acknowledged and st.button(f"Proceed with manual {identity_label} processing", type="primary", use_container_width=True):
+        stored_path = _store_kyc_json(payload, approved=False)
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": (
+                    f"{identity_label} documents were accepted for manual processing and stored as JSON: `{stored_path}`. "
+                    "An agent may request additional information before final approval."
+                ),
+            }
+        )
+        st.session_state.pending_kyc_report = None
+        st.session_state.collected = _empty_intake()
+        st.session_state.transcript = []
+        st.session_state.awaiting_document_followup = False
+        st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
         st.rerun()
 
 
@@ -1102,7 +1119,7 @@ def _kyc_review_summary(report) -> str:
     if llm_summary:
         return llm_summary
 
-    fields = payload.get("extracted_key_fields") or {}
+    fields = _identity_display_fields(payload, payload.get("extracted_key_fields") or {})
     issues = payload.get("validation_issues") or []
     missing = payload.get("missing_documents") or []
     field_text = ", ".join(f"{_display_label(key)}: {value}" for key, value in fields.items()) or "no fields parsed yet"
@@ -1119,6 +1136,15 @@ def _kyc_review_summary(report) -> str:
     if issue_text:
         review_parts.append(f"details to correct: {issue_text}")
     return f"I parsed these {identity_label} details: {field_text}. I need a corrected upload because " + "; ".join(review_parts or ["some required details could not be verified"]) + "."
+
+
+def _identity_display_fields(payload: dict, fields: dict) -> dict:
+    customer_type = payload.get("customer_type")
+    if customer_type == "business":
+        allowed = {"company_name", "pan_number", "gstin", "registered_address", "authorized_signatory", "bank_account_holder"}
+    else:
+        allowed = {"customer_name", "date_of_birth", "pan_number", "aadhaar_number", "address"}
+    return {key: value for key, value in fields.items() if key in allowed}
 
 
 def _documents_uploaded_but_unparsed(payload: dict) -> bool:
