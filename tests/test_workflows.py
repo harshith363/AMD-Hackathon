@@ -34,20 +34,20 @@ def _packet(
 
 class WorkflowTests(unittest.TestCase):
     def test_product_categories_are_scoped_and_expanded(self):
-        self.assertEqual(get_insurance_categories("individual")["categories"], ["health", "life", "motor"])
-        self.assertEqual(get_insurance_categories("business")["categories"], ["cybersecurity", "liability", "property"])
+        self.assertEqual(get_insurance_categories("individual")["categories"], ["health", "motor"])
+        self.assertEqual(get_insurance_categories("business")["categories"], ["cybersecurity", "property"])
 
-        for category in ["health", "life", "motor"]:
+        for category in ["health", "motor"]:
             schemes = get_product_catalog_options("individual", category)["schemes"]
-            self.assertGreaterEqual(len(schemes), 4)
+            self.assertEqual(len(schemes), 2)
 
-        for category in ["cybersecurity", "liability", "property"]:
+        for category in ["cybersecurity", "property"]:
             schemes = get_product_catalog_options("business", category)["schemes"]
-            self.assertGreaterEqual(len(schemes), 4)
+            self.assertEqual(len(schemes), 2)
 
     def test_claim_types_are_scoped_to_active_insurance_lines(self):
-        self.assertEqual(get_claim_types("individual")["claim_types"], ["health", "life", "motor"])
-        self.assertEqual(get_claim_types("business")["claim_types"], ["cybersecurity", "professional_liability", "property_damage"])
+        self.assertEqual(get_claim_types("individual")["claim_types"], ["health"])
+        self.assertEqual(get_claim_types("business")["claim_types"], ["cybersecurity", "property_damage"])
 
     def test_business_property_claim_missing_repair_estimate(self):
         orchestrator = WorkflowOrchestrator()

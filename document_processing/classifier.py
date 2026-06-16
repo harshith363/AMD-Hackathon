@@ -8,6 +8,8 @@ DOCUMENT_HINTS = {
     "policy_copy": ["policy number", "sum insured", "policy copy"],
     "incident_report": ["incident report", "damage description"],
     "repair_estimate": ["repair estimate", "estimated repair"],
+    "forensic_report": ["forensic report", "forensic investigation", "root cause analysis"],
+    "loss_estimate": ["loss estimate", "business interruption loss", "estimated loss"],
     "hospital_bill": ["hospital bill", "invoice", "total bill"],
     "discharge_summary": ["discharge summary", "admission date", "discharge date"],
     "death_certificate": ["death certificate", "date of death"],

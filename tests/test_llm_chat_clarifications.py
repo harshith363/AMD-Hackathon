@@ -14,8 +14,8 @@ class LLMChatClarificationTests(unittest.TestCase):
         collected["customer_type"] = "individual"
         answer = _answer_clarification(FakeClient(), "What options do you have?", collected, ["workflow_type"])
 
-        self.assertIn("find new insurance", answer)
-        self.assertIn("validate claim documents", answer)
+        self.assertIn("start policy onboarding", answer)
+        self.assertIn("validate claim compliance", answer)
         self.assertIn("complete KYC validation", answer)
         self.assertIn("Which one", answer)
 
@@ -27,7 +27,7 @@ class LLMChatClarificationTests(unittest.TestCase):
 
         self.assertIn("health", answer)
         self.assertIn("motor", answer)
-        self.assertIn("life", answer)
+        self.assertNotIn("life", answer)
         self.assertNotIn("personal accident", answer)
 
     def test_give_me_options_answers_supported_workflows(self):
@@ -35,8 +35,8 @@ class LLMChatClarificationTests(unittest.TestCase):
         collected["customer_type"] = "individual"
         answer = _answer_clarification(FakeClient(), "give me options", collected, ["workflow_type"])
 
-        self.assertIn("find new insurance", answer)
-        self.assertIn("validate claim documents", answer)
+        self.assertIn("start policy onboarding", answer)
+        self.assertIn("validate claim compliance", answer)
 
     def test_individual_user_details_are_requested_after_action(self):
         collected = _empty_intake()

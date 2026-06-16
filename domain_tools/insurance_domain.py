@@ -9,18 +9,18 @@ from rules.kyc_rules import KYC_RULES
 WORKFLOWS = [
     {
         "workflow_type": "new_insurance",
-        "label": "find new insurance",
-        "description": "Search the product catalogue and recommend matching insurance schemes.",
+        "label": "start policy onboarding",
+        "description": "Find a compact policy recommendation, then move into KYC or KYB.",
     },
     {
         "workflow_type": "claim_validation",
-        "label": "validate claim documents",
-        "description": "Parse uploaded documents, classify them, extract fields, and validate claim requirements.",
+        "label": "validate claim compliance",
+        "description": "Parse uploaded claim documents, extract fields, and validate compliance requirements.",
     },
     {
         "workflow_type": "kyc_validation",
         "label": "complete KYC validation",
-        "description": "Validate individual identity, address, PAN, and bank proof documents.",
+        "description": "Validate individual identity, PAN, address, and demographic details.",
         "customer_type": "individual",
     },
     {

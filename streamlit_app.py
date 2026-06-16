@@ -33,6 +33,7 @@ def main() -> None:
 
     st.markdown("<main class='chat-shell'>", unsafe_allow_html=True)
     _render_header()
+    _render_demo_shortcuts()
     _render_chat()
     _process_pending_message()
     _render_user_details_form()
@@ -75,6 +76,7 @@ def _reset_conversation() -> None:
     st.session_state.awaiting_document_followup = False
     st.session_state.upload_session_id = uuid4().hex[:10]
     st.session_state.identity_uploads = {}
+    st.session_state.claim_uploads = {}
 
 
 def _render_header() -> None:
@@ -83,8 +85,8 @@ def _render_header() -> None:
         st.markdown(
             """
             <section class="hero">
-              <h1>Insurance Operations Assistant</h1>
-              <p>Tell me what you need: find a policy, validate claim documents, or complete KYC/KYB.</p>
+              <h1>AI Insurance Compliance Desk</h1>
+              <p>Validate claim compliance and complete AI-assisted KYC/KYB, with lightweight policy onboarding as an add-on.</p>
             </section>
             """,
             unsafe_allow_html=True,
@@ -93,6 +95,24 @@ def _render_header() -> None:
         if st.button("Reset", use_container_width=True):
             _reset_conversation()
             st.rerun()
+
+
+def _render_demo_shortcuts() -> None:
+    with st.expander("Demo shortcuts", expanded=False):
+        st.caption("Use these sample flows for a reliable hackathon demo.")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("Sample Individual KYC", use_container_width=True):
+                _run_sample_individual_kyc()
+                st.rerun()
+        with col2:
+            if st.button("Sample Business KYB", use_container_width=True):
+                _run_sample_business_kyb()
+                st.rerun()
+        with col3:
+            if st.button("Sample Property Claim", use_container_width=True):
+                _run_sample_property_claim()
+                st.rerun()
 
 
 def _render_chat() -> None:
@@ -178,6 +198,9 @@ def _render_document_uploader() -> None:
             return
         _render_identity_document_uploader()
         return
+    if _is_claim_intake(st.session_state.collected):
+        _render_claim_document_uploader()
+        return
     if (
         "document file paths" not in missing
         and "incident description" not in missing
@@ -236,6 +259,57 @@ def _render_document_uploader() -> None:
                 question = next_assistant_question(st.session_state.orchestrator, st.session_state.collected)
                 st.session_state.messages.append({"role": "assistant", "content": question})
                 st.session_state.show_options = _question_needs_options(st.session_state.collected)
+            st.rerun()
+
+
+def _render_claim_document_uploader() -> None:
+    missing = _missing_fields(st.session_state.collected)
+    if "claim_type" in missing:
+        return
+    customer_type = st.session_state.collected.get("customer_type")
+    case_type = st.session_state.collected.get("case_type")
+    required_documents = get_required_documents(customer_type, "claim_validation", case_type)["required_documents"]
+    uploads = st.session_state.setdefault("claim_uploads", {})
+
+    with st.expander("Claim compliance checklist", expanded=True):
+        st.markdown(_claim_compliance_rules(customer_type, case_type, required_documents))
+        st.session_state.collected["incident_description"] = st.text_area(
+            "Incident description",
+            value=st.session_state.collected.get("incident_description") or "",
+            placeholder="Describe what happened, when it happened, and the loss/treatment involved.",
+        ).strip()
+
+        staged_files = {}
+        for doc_type in required_documents:
+            label = _display_label(doc_type).title()
+            existing_path = uploads.get(doc_type)
+            if existing_path:
+                st.success(f"{label} uploaded: `{Path(existing_path).name}`")
+            uploaded_file = st.file_uploader(
+                f"Upload {label}",
+                type=["txt", "pdf", "png", "jpg", "jpeg", "tiff", "bmp", "webp"],
+                key=f"claim_upload_{doc_type}",
+            )
+            if uploaded_file is not None:
+                staged_files[doc_type] = uploaded_file
+
+        missing_docs = [doc_type for doc_type in required_documents if not uploads.get(doc_type) and doc_type not in staged_files]
+        if missing_docs:
+            st.info("Upload all required claim documents before analysis: " + ", ".join(_display_label(item) for item in missing_docs) + ".")
+            return
+        if not st.session_state.collected.get("incident_description"):
+            st.info("Add the incident description before analysis.")
+            return
+
+        if st.button("Upload and analyze claim documents", type="primary", use_container_width=True):
+            for doc_type, uploaded_file in staged_files.items():
+                uploads[doc_type] = _save_uploaded_file_for_doc(uploaded_file, doc_type)
+            st.session_state.collected["file_paths"] = [uploads[doc_type] for doc_type in required_documents]
+            st.session_state.collected = _normalize_intake(st.session_state.collected)
+            st.session_state.messages.append({"role": "user", "content": "Uploaded all required claim documents and requested compliance analysis."})
+            report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
+            if report:
+                _handle_report(report)
             st.rerun()
 
 
@@ -572,6 +646,98 @@ def _save_uploaded_files(uploaded_files) -> list[str]:
     return paths
 
 
+def _run_sample_individual_kyc() -> None:
+    _reset_conversation()
+    st.session_state.messages.append({"role": "user", "content": "Run sample individual KYC verification."})
+    st.session_state.identity_uploads = {
+        path.stem: str(path)
+        for path in Path("sample_data/individual_kyc_mismatch").glob("*.txt")
+        if path.stem in {"pan", "identity_proof"}
+    }
+    report = st.session_state.orchestrator.run_document_validation(
+        _sample_document_packet(
+            "individual",
+            "kyc_validation",
+            "kyc",
+            "sample_data/individual_kyc_mismatch",
+            user_inputs={
+                "name": "Rohan Mehta",
+                "date_of_birth": "05/03/1992",
+                "address": "77 Park Street Mumbai",
+                "phone_number": "9876543210",
+                "job": "Software Engineer",
+                "annual_income": "1200000",
+            },
+        )
+    )
+    _handle_report(report)
+
+
+def _run_sample_business_kyb() -> None:
+    _reset_conversation()
+    st.session_state.messages.append({"role": "user", "content": "Run sample business KYB verification."})
+    st.session_state.identity_uploads = {
+        path.stem: str(path)
+        for path in Path("sample_data/business_kyb").glob("*.txt")
+    }
+    report = st.session_state.orchestrator.run_document_validation(
+        _sample_document_packet(
+            "business",
+            "kyb_validation",
+            "kyb",
+            "sample_data/business_kyb",
+            user_inputs={
+                "company_name": "Acme Manufacturing Pvt Ltd",
+                "business_type": "manufacturing",
+                "registered_address": "12 Industrial Estate, Pune",
+                "contact_person": "Nisha Rao",
+                "contact_phone": "9876543210",
+                "annual_turnover": "50000000",
+                "employee_count": "120",
+            },
+        )
+    )
+    _handle_report(report)
+
+
+def _run_sample_property_claim() -> None:
+    _reset_conversation()
+    st.session_state.messages.append({"role": "user", "content": "Run sample business property claim compliance check."})
+    report = st.session_state.orchestrator.run_document_validation(
+        _sample_document_packet(
+            "business",
+            "claim_validation",
+            "property_damage",
+            "sample_data/business_property_claim",
+            user_inputs={
+                "company_name": "Acme Manufacturing Pvt Ltd",
+                "business_type": "manufacturing",
+                "registered_address": "12 Industrial Estate, Pune",
+                "contact_person": "Nisha Rao",
+                "contact_phone": "9876543210",
+                "annual_turnover": "50000000",
+                "employee_count": "120",
+            },
+            incident_description="Warehouse roof and inventory were damaged during heavy rain on 10/05/2026.",
+        )
+    )
+    _handle_report(report)
+
+
+def _sample_document_packet(customer_type: str, workflow_type: str, case_type: str, folder: str, **kwargs):
+    from schemas.messages import DocumentPacketMessage
+
+    paths = sorted(str(path) for path in Path(folder).glob("*.txt"))
+    return DocumentPacketMessage(
+        session_id=st.session_state.orchestrator.new_session_id(),
+        customer_type=customer_type,
+        workflow_type=workflow_type,
+        case_type=case_type,
+        file_paths=paths,
+        **kwargs,
+    )
+
+
 def _save_uploaded_file_for_doc(uploaded_file, doc_type: str) -> str:
     output_dir = Path("outputs/uploads") / st.session_state.upload_session_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -579,6 +745,32 @@ def _save_uploaded_file_for_doc(uploaded_file, doc_type: str) -> str:
     target = output_dir / f"{doc_type}_{safe_name}"
     target.write_bytes(uploaded_file.getbuffer())
     return str(target)
+
+
+def _claim_compliance_rules(customer_type: str | None, case_type: str | None, required_documents: list[str]) -> str:
+    documents = ", ".join(_display_label(item) for item in required_documents)
+    if customer_type == "business" and case_type == "cybersecurity":
+        return (
+            "**Compliance rules for cyber claim validation**\n\n"
+            f"- Required documents: {documents}.\n"
+            "- Incident date, policy number, breach/loss summary, forensic evidence, and loss estimate must be readable.\n"
+            "- Upload police report if fraud, extortion, or a legal case is involved.\n"
+            "- The business name and policy number should be consistent across documents."
+        )
+    if customer_type == "business":
+        return (
+            "**Compliance rules for business property claim validation**\n\n"
+            f"- Required documents: {documents}.\n"
+            "- Policy number, incident date, company name, and claim amount must be readable.\n"
+            "- Upload police report if theft or a legal case is involved.\n"
+            "- Damage report and repair estimate should describe the same incident."
+        )
+    return (
+        "**Compliance rules for health claim validation**\n\n"
+        f"- Required documents: {documents}.\n"
+        "- Policy number, patient name, bill amount, and hospitalization details must be readable.\n"
+        "- Hospital bill and discharge summary should refer to the same patient and treatment event."
+    )
 
 
 def _run_identity_validation(customer_type: str | None, *, payload_user_inputs: dict, correction: bool = False) -> None:
