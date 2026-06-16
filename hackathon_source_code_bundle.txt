@@ -1,0 +1,4582 @@
+AGENTIC INSURANCE OPERATIONS ASSISTANT - SOURCE CODE BUNDLE
+========================================================================
+Generated for hackathon submission. Copy this text into Word, apply a monospace font for code sections if desired, then export to PDF.
+
+TABLE OF CONTENTS
+------------------------------------------------------------------------
+01. README.md
+02. requirements.txt
+03. app.py
+04. streamlit_app.py
+05. agents/database.py
+06. agents/document_classifier.py
+07. agents/document_intake.py
+08. agents/escalation.py
+09. agents/extraction.py
+10. agents/product_discovery.py
+11. agents/reconciliation.py
+12. agents/report.py
+13. agents/router.py
+14. agents/validation.py
+15. cli/llm_chat.py
+16. db/database.py
+17. document_processing/classifier.py
+18. document_processing/extraction.py
+19. document_processing/intake.py
+20. domain_tools/__init__.py
+21. domain_tools/insurance_domain.py
+22. llm/__init__.py
+23. llm/vllm_client.py
+24. mcp_server/client.py
+25. mcp_server/server.py
+26. mcp_server/insurance_catalog.json
+27. orchestrator/trace.py
+28. orchestrator/workflow.py
+29. rules/claim_rules.py
+30. rules/kyc_rules.py
+31. schemas/messages.py
+32. tests/test_llm_chat_clarifications.py
+33. tests/test_workflows.py
+
+
+========================================================================
+FILE 01: README.md
+========================================================================
+
+# Agentic Insurance Operations Assistant
+
+Interactive Streamlit app for insurance operations, built for the AMD Jupyter hackathon environment. The app uses vLLM for conversation and local Python tools/agents for insurance business logic.
+
+## What It Does
+
+- Supports `individual` and `business` users.
+- Finds new insurance products from a mock MCP-style catalogue.
+- Validates claim document packets.
+- Validates individual KYC and business KYB document packets.
+- Uses local domain tools for supported workflows, insurance categories, claim types, and required documents.
+- Uses deterministic rules for missing documents, field checks, consistency checks, status, and human-review decisions.
+- Saves JSON and Markdown reports under `outputs/reports/`.
+- Saves audit records in SQLite under `outputs/insurance_assistant.sqlite3`.
+
+The LLM handles conversation and reasoning over tool results. It does not own the business rules or validation status.
+
+## Architecture
+
+```text
+Streamlit UI
+  -> vLLM chat endpoint
+  -> Domain tools
+  -> Structured messages
+  -> Workflow orchestrator
+  -> Specialized agents
+  -> Reports + SQLite
+```
+
+Key folders:
+
+```text
+agents/               Specialized workflow agents
+cli/                  Shared conversational intake logic
+domain_tools/         Tool functions for workflows, categories, claims, documents
+mcp_server/           Mock MCP product catalogue
+rules/                Claim, KYC, and KYB validation rules
+schemas/              Structured message models
+sample_data/          Sample document packets used by tests
+tests/                Unit tests
+```
+
+## 1. Install Streamlit In AMD Jupyter
+
+For the default ROCm + vLLM Docker image, the hackathon FAQ recommends:
+
+```bash
+python3.12 -m pip install --ignore-installed blinker streamlit
+python3.12 -m pip install "starlette<0.49.0" "protobuf<7.0.0" "numpy<2.3"
+```
+
+These commands were specifically tested against the default Docker image. Avoid uninstalling unrelated dependencies.
+
+Do not install Streamlit through `pip install -r requirements.txt` in the AMD default image. The base image has a distutils-installed `blinker 1.4`, and a normal Streamlit install can fail while trying to uninstall it. The `--ignore-installed blinker` command above avoids that.
+
+Optional backend packages:
+
+```bash
+python3.12 -m pip install -r requirements.txt
+```
+
+## 2. Serve The vLLM Model
+
+Run this in one terminal:
+
+```bash
+vllm serve Qwen/Qwen2.5-32B-Instruct \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --dtype bfloat16 \
+  --max-model-len 4096 \
+  --gpu-memory-utilization 0.92
+```
+
+Optional health check from another terminal:
+
+```bash
+curl http://localhost:8000/v1/models
+```
+
+For PAN/Aadhaar image parsing, use a multimodal model. The app defaults to Gemma 4 E4B:
+
+```bash
+vllm serve google/gemma-4-E4B-it \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --dtype bfloat16 \
+  --max-model-len 32768 \
+  --gpu-memory-utilization 0.95 \
+  --enable-auto-tool-choice \
+  --tool-call-parser gemma4 \
+  --reasoning-parser gemma4 \
+  --trust-remote-code
+```
+
+```bash
+vllm serve mistralai/Ministral-3-14B-Instruct-2512 \
+  --tokenizer_mode mistral \
+  --config_format mistral \
+  --load_format mistral \
+  --tensor-parallel-size 1 \
+  --enable-auto-tool-choice \
+  --tool-call-parser mistral
+```
+
+Google's Gemma 4 docs list text and image input support, including OCR and document/PDF parsing. The smaller E4B instruction-tuned model is a practical default for the hackathon environment; use `google/gemma-4-12B-it`, `google/gemma-4-26B-A4B-it`, or `google/gemma-4-31B-it` only if your GPU memory allows it.
+
+## 3. Start The Streamlit App
+
+Run this in another terminal from the project root:
+
+```bash
+streamlit run streamlit_app.py \
+  --server.address 0.0.0.0 \
+  --server.port 8501 \
+  --server.baseUrlPath proxy/8501 \
+  --server.headless true \
+  --server.enableCORS false \
+  --server.enableXsrfProtection false
+```
+
+The `--server.baseUrlPath proxy/8501` flag is important in the AMD notebook proxy. Without it, the HTML page may load but CSS, fonts, and JavaScript can be requested from `/proxy/static/...` instead of `/proxy/8501/static/...`, which produces a blank page.
+
+## 4. Open The App
+
+If your notebook URL is:
+
+```text
+https://notebooks.amd.com/<pod-name>/lab
+```
+
+open:
+
+```text
+https://notebooks.amd.com/<pod-name>/proxy/8501/
+```
+
+Example:
+
+```text
+https://notebooks.amd.com/jupyter-hack-team-5000-260609205410-931e891d/proxy/8501/
+```
+
+## 5. Use The App
+
+The app opens as a centered GPT-style chat. Chat naturally:
+
+```text
+I am an individual
+give me options
+I want a new policy
+health
+My name is Harshith
+yes
+```
+
+When the assistant needs a structured choice, such as customer type, workflow, insurance category, or claim type, the app shows horizontal option cards. Click a card, then press `Enter`. You can also keep typing free-form text in the chat input.
+
+For document workflows, either type local file paths in chat or upload files through the inline document uploader when it appears. Uploaded files are stored under `outputs/uploads/` and passed into the same document validation agents.
+
+The Streamlit app uses these built-in vLLM defaults:
+
+```text
+Base URL: http://localhost:8000/v1
+Model: Qwen/Qwen2.5-32B-Instruct
+API key: EMPTY
+```
+
+## 6. Tool-Backed Conversation
+
+When the user asks something like `give me options`, the app invokes local domain tools:
+
+```text
+get_supported_workflows(customer_type)
+get_insurance_categories(customer_type)
+get_claim_types(customer_type)
+get_required_documents(customer_type, workflow_type, case_type)
+```
+
+The tool result is passed to vLLM so the model can phrase a helpful answer. This keeps insurance logic out of prompts and inside Python modules.
+
+## 7. Optional CLI Mode
+
+The Streamlit app is the recommended interface. A terminal chat interface is also available:
+
+```bash
+python3 app.py \
+  --use-llm \
+  --vllm-base-url http://localhost:8000/v1 \
+  --vllm-model Qwen/Qwen2.5-32B-Instruct \
+  --vllm-api-key EMPTY
+```
+
+## 8. Validation Before Push
+
+Run:
+
+```bash
+python3 -m py_compile app.py streamlit_app.py cli/*.py domain_tools/*.py llm/*.py agents/*.py orchestrator/*.py schemas/messages.py document_processing/*.py rules/*.py mcp_server/*.py db/database.py tests/*.py
+python3 -m unittest discover -s tests
+```
+
+Expected:
+
+- Compile succeeds.
+- Unit tests pass.
+
+## 9. Git Hygiene
+
+Ignored generated/local files:
+
+- `outputs/`
+- `__pycache__/`
+- `*.pyc`
+- `.ipynb_checkpoints/`
+- `.venv/`
+- `.env`
+
+Commit source files, sample data, tests, and this README. Do not commit generated reports, SQLite output, uploaded files, credentials, virtual environments, or notebook checkpoints.
+
+
+========================================================================
+FILE 02: requirements.txt
+========================================================================
+
+# Install Streamlit separately in the AMD default ROCm+vLLM image.
+# See README.md for the blinker-safe install command.
+pydantic>=2.0
+pypdf>=4.0
+Pillow>=10.0
+
+
+========================================================================
+FILE 03: app.py
+========================================================================
+
+from __future__ import annotations
+
+import argparse
+
+from cli.llm_chat import run_llm_interactive
+from orchestrator.workflow import WorkflowOrchestrator
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Agentic Insurance Operations Assistant")
+    parser.add_argument("--use-llm", action="store_true", help="Use vLLM/OpenAI-compatible endpoint")
+    parser.add_argument("--vllm-base-url", default="http://localhost:8000/v1", help="vLLM OpenAI-compatible base URL")
+    parser.add_argument("--vllm-model", default="amd-hackathon-model", help="vLLM served model name")
+    parser.add_argument("--vllm-api-key", default="EMPTY", help="API key for OpenAI-compatible vLLM endpoint")
+    parser.add_argument("--vllm-timeout-seconds", type=int, default=20, help="vLLM request timeout")
+    args = parser.parse_args()
+    orchestrator = WorkflowOrchestrator(
+        use_llm=args.use_llm,
+        vllm_base_url=args.vllm_base_url,
+        vllm_model=args.vllm_model,
+        vllm_api_key=args.vllm_api_key,
+        vllm_timeout_seconds=args.vllm_timeout_seconds,
+    )
+    run_interactive(orchestrator)
+
+
+def run_interactive(orchestrator: WorkflowOrchestrator) -> None:
+    run_llm_interactive(orchestrator, print_cli_summary)
+
+
+def print_cli_summary(report) -> None:
+    payload = report.json_report
+    print(f"Report ID: {report.report_id}")
+    if report.report_type == "new_insurance":
+        print(f"Recommendations: {len(payload['recommendations'])}")
+        for item in payload["recommendations"]:
+            print(f"- {item['scheme_name']}: {item['recommended_next_step']}")
+    else:
+        print(f"Status: {payload['status']}")
+        print(f"Human review required: {payload['human_review_required']}")
+        print(f"Missing documents: {', '.join(payload['missing_documents']) or 'None'}")
+        print(f"Next action: {payload['next_action']}")
+    print(f"Saved JSON/Markdown report under outputs/reports/{report.report_id}.*")
+
+
+if __name__ == "__main__":
+    main()
+
+
+========================================================================
+FILE 04: streamlit_app.py
+========================================================================
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import re
+from uuid import uuid4
+
+import streamlit as st
+
+from cli.llm_chat import (
+    REQUIRED_BUSINESS_USER_FIELDS,
+    REQUIRED_INDIVIDUAL_USER_FIELDS,
+    _empty_intake,
+    _missing_fields,
+    _normalize_intake,
+    next_assistant_question,
+    process_user_message,
+    run_ready_workflow,
+)
+from domain_tools import get_claim_types, get_insurance_categories, get_required_documents, get_supported_workflows
+from orchestrator.workflow import WorkflowOrchestrator
+
+DEFAULT_BASE_URL = "http://localhost:8000/v1"
+DEFAULT_MODEL = "mistralai/Ministral-3-14B-Instruct-2512"
+DEFAULT_API_KEY = "EMPTY"
+DEFAULT_TIMEOUT = 20
+
+
+def main() -> None:
+    st.set_page_config(page_title="Insurance Operations Assistant", layout="centered")
+    _inject_styles()
+    _ensure_state()
+
+    st.markdown("<main class='chat-shell'>", unsafe_allow_html=True)
+    _render_header()
+    _render_chat()
+    _process_pending_message()
+    _render_user_details_form()
+    _render_option_cards()
+    _render_document_uploader()
+    _render_policy_application_form()
+    _render_kyc_review()
+    _handle_chat_input()
+    st.markdown("</main>", unsafe_allow_html=True)
+
+
+def _ensure_state() -> None:
+    if "orchestrator" not in st.session_state:
+        st.session_state.orchestrator = WorkflowOrchestrator(
+            use_llm=True,
+            vllm_base_url=DEFAULT_BASE_URL,
+            vllm_model=DEFAULT_MODEL,
+            vllm_api_key=DEFAULT_API_KEY,
+            vllm_timeout_seconds=DEFAULT_TIMEOUT,
+        )
+    if "collected" not in st.session_state:
+        _reset_conversation()
+    if not st.session_state.messages:
+        question = next_assistant_question(st.session_state.orchestrator, st.session_state.collected)
+        st.session_state.messages.append({"role": "assistant", "content": question})
+        st.session_state.show_options = _question_needs_options(st.session_state.collected)
+
+
+def _reset_conversation() -> None:
+    st.session_state.collected = _empty_intake()
+    st.session_state.transcript = []
+    st.session_state.messages = []
+    st.session_state.report = None
+    st.session_state.pending_policy_report = None
+    st.session_state.policy_application_approved = False
+    st.session_state.pending_kyc_report = None
+    st.session_state.pending_user_text = None
+    st.session_state.selected_option = None
+    st.session_state.show_options = False
+    st.session_state.awaiting_document_followup = False
+    st.session_state.upload_session_id = uuid4().hex[:10]
+    st.session_state.identity_uploads = {}
+
+
+def _render_header() -> None:
+    top_left, top_right = st.columns([0.8, 0.2], vertical_alignment="center")
+    with top_left:
+        st.markdown(
+            """
+            <section class="hero">
+              <h1>Insurance Operations Assistant</h1>
+              <p>Tell me what you need: find a policy, validate claim documents, or complete KYC/KYB.</p>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
+    with top_right:
+        if st.button("Reset", use_container_width=True):
+            _reset_conversation()
+            st.rerun()
+
+
+def _render_chat() -> None:
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+
+def _process_pending_message() -> None:
+    pending = st.session_state.get("pending_user_text")
+    if not pending:
+        return
+    st.session_state.pending_user_text = None
+    if st.session_state.get("pending_policy_report"):
+        if _policy_approval_requested(pending):
+            _start_identity_workflow_from_policy(st.session_state.pending_policy_report)
+        else:
+            st.session_state.messages.append({"role": "assistant", "content": _answer_policy_question(st.session_state.pending_policy_report, pending)})
+        st.rerun()
+    with st.spinner("Thinking..."):
+        result = process_user_message(
+            st.session_state.orchestrator,
+            st.session_state.collected,
+            st.session_state.transcript,
+            pending,
+        )
+    if result["exit_requested"]:
+        _reset_conversation()
+        st.rerun()
+
+    st.session_state.collected = result["collected"]
+    st.session_state.transcript = result["transcript"]
+    for message in result["assistant_messages"]:
+        st.session_state.messages.append({"role": "assistant", "content": message})
+
+    if result["report"]:
+        st.session_state.report = result["report"]
+        st.session_state.messages.append({"role": "assistant", "content": _report_summary(result["report"])})
+        if _is_policy_report(result["report"]):
+            st.session_state.pending_policy_report = result["report"]
+            st.session_state.policy_application_approved = False
+            st.session_state.messages.append({"role": "assistant", "content": _policy_approval_prompt(result["report"])})
+        elif _is_identity_report(result["report"]):
+            st.session_state.pending_kyc_report = result["report"]
+            st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(result["report"])})
+            st.session_state.awaiting_document_followup = not _kyc_details_align(result["report"].json_report)
+        elif _should_continue_document_workflow(result["report"]):
+            st.session_state.collected = _prepare_followup_intake(st.session_state.collected, result["report"])
+            st.session_state.transcript = []
+            st.session_state.messages.append({"role": "assistant", "content": _followup_prompt(result["report"])})
+        else:
+            st.session_state.collected = _empty_intake()
+            st.session_state.transcript = []
+            st.session_state.selected_option = None
+            st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
+    elif not result["assistant_messages"]:
+        question = next_assistant_question(st.session_state.orchestrator, st.session_state.collected)
+        if question:
+            st.session_state.messages.append({"role": "assistant", "content": question})
+            st.session_state.show_options = _question_needs_options(st.session_state.collected)
+    st.rerun()
+
+
+def _render_option_cards() -> None:
+    if not st.session_state.get("show_options"):
+        return
+    options = _current_options()
+    if not options:
+        return
+
+    st.markdown("#### Choose an option")
+    columns = st.columns(min(4, len(options)))
+    for index, option in enumerate(options):
+        with columns[index % len(columns)]:
+            if st.button(option["label"], key=f"option_{option['value']}", use_container_width=True):
+                _select_option(option["value"])
+
+
+def _render_document_uploader() -> None:
+    missing = _missing_fields(st.session_state.collected)
+    if _is_identity_intake(st.session_state.collected):
+        if st.session_state.get("pending_kyc_report"):
+            return
+        _render_identity_document_uploader()
+        return
+    if (
+        "document file paths" not in missing
+        and "incident description" not in missing
+        and not st.session_state.get("awaiting_document_followup")
+    ):
+        return
+    with st.expander("Upload documents", expanded=True):
+        if _is_individual_kyc_intake(st.session_state.collected):
+            st.caption("Upload PAN card and Aadhaar card as PDF or image files.")
+        if _is_business_kyb_intake(st.session_state.collected):
+            st.caption("Upload company PAN, GST certificate, incorporation, board resolution, address, signatory, ownership, and bank proof documents.")
+        if _is_claim_intake(st.session_state.collected):
+            st.session_state.collected["incident_description"] = st.text_area(
+                "Incident description",
+                value=st.session_state.collected.get("incident_description") or "",
+                placeholder="Briefly describe what happened, when it happened, and the loss or treatment involved.",
+            ).strip()
+        uploaded_files = st.file_uploader(
+            "Attach PDF, image, or TXT files",
+            type=["txt", "pdf", "png", "jpg", "jpeg", "tiff", "bmp", "webp"],
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+        )
+        existing_paths = st.session_state.collected.get("file_paths") or []
+        ready_for_submit = bool(uploaded_files or existing_paths)
+        if _is_claim_intake(st.session_state.collected):
+            ready_for_submit = ready_for_submit and bool(st.session_state.collected.get("incident_description"))
+        if ready_for_submit and st.button("Use uploaded files", type="primary"):
+            if uploaded_files:
+                paths = _save_uploaded_files(uploaded_files)
+                existing = st.session_state.collected.get("file_paths") or []
+                st.session_state.collected["file_paths"] = [*existing, *paths]
+                st.session_state.awaiting_document_followup = False
+            st.session_state.collected = _normalize_intake(st.session_state.collected)
+            uploaded_text = "Uploaded documents:\n" + "\n".join(st.session_state.collected["file_paths"])
+            if st.session_state.collected.get("incident_description"):
+                uploaded_text += f"\n\nIncident description: {st.session_state.collected['incident_description']}"
+            st.session_state.messages.append({"role": "user", "content": uploaded_text})
+            report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
+            if report:
+                st.session_state.report = report
+                st.session_state.messages.append({"role": "assistant", "content": _report_summary(report)})
+                if _is_identity_report(report):
+                    st.session_state.pending_kyc_report = report
+                    st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
+                    st.session_state.awaiting_document_followup = not _kyc_details_align(report.json_report)
+                elif _should_continue_document_workflow(report):
+                    st.session_state.collected = _prepare_followup_intake(st.session_state.collected, report)
+                    st.session_state.transcript = []
+                    st.session_state.messages.append({"role": "assistant", "content": _followup_prompt(report)})
+                else:
+                    st.session_state.collected = _empty_intake()
+                    st.session_state.transcript = []
+                    st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
+            else:
+                question = next_assistant_question(st.session_state.orchestrator, st.session_state.collected)
+                st.session_state.messages.append({"role": "assistant", "content": question})
+                st.session_state.show_options = _question_needs_options(st.session_state.collected)
+            st.rerun()
+
+
+def _render_user_details_form() -> None:
+    missing = _missing_fields(st.session_state.collected)
+    if "user details" not in missing and "business details" not in missing:
+        return
+    customer_type = st.session_state.collected.get("customer_type")
+    if customer_type not in {"individual", "business"} or not st.session_state.collected.get("workflow_type"):
+        return
+
+    current = st.session_state.collected.get("user_inputs") or {}
+    title = "Business details" if customer_type == "business" else "User details"
+    with st.expander(title, expanded=True):
+        with st.form(f"{customer_type}_user_details_form"):
+            if customer_type == "business":
+                details, submitted = _business_details_inputs(current)
+            else:
+                details, submitted = _individual_details_inputs(current)
+
+        if not submitted:
+            return
+
+        validation = _validate_application_details(details, customer_type)
+        if not validation["is_valid"]:
+            st.error("Please correct: " + "; ".join(validation["issues"]))
+            return
+
+        st.session_state.collected["user_inputs"] = validation.get("normalized_details") or details
+        st.session_state.messages.append({"role": "user", "content": f"Submitted {title.lower()}."})
+        question = next_assistant_question(st.session_state.orchestrator, st.session_state.collected)
+        if question:
+            st.session_state.messages.append({"role": "assistant", "content": question})
+            st.session_state.show_options = _question_needs_options(st.session_state.collected)
+        st.rerun()
+
+
+def _render_policy_application_form() -> None:
+    report = st.session_state.get("pending_policy_report")
+    if not report:
+        return
+    with st.expander("Policy application", expanded=True):
+        payload = report.json_report
+        best_policy = _best_policy(payload)
+        st.caption("Recommended policies")
+        if best_policy:
+            st.markdown(_best_policy_box(best_policy, payload), unsafe_allow_html=True)
+        for item in payload["recommendations"]:
+            with st.expander(item["scheme_name"], expanded=item == best_policy):
+                st.markdown(_policy_detail_markdown(item, item == best_policy))
+
+        with st.form("policy_question_form"):
+            question = st.text_input("Ask about these policies", placeholder="Example: why is this better for me?")
+            asked = st.form_submit_button("Ask")
+        if asked and question.strip():
+            st.session_state.messages.append({"role": "user", "content": question.strip()})
+            st.session_state.messages.append({"role": "assistant", "content": _answer_policy_question(report, question.strip())})
+            st.rerun()
+
+        if not st.session_state.policy_application_approved:
+            approve_col, decline_col = st.columns(2)
+            with approve_col:
+                identity_label = "KYB" if payload.get("customer_type") == "business" else "KYC"
+                if st.button(f"Approve and continue to {identity_label}", type="primary", use_container_width=True):
+                    _start_identity_workflow_from_policy(report)
+                    st.rerun()
+            with decline_col:
+                if st.button("Do not proceed", use_container_width=True):
+                    st.session_state.pending_policy_report = None
+                    st.session_state.policy_application_approved = False
+                    st.session_state.collected = _empty_intake()
+                    st.session_state.transcript = []
+                    st.session_state.messages.append({"role": "assistant", "content": "No problem. What would you like to process next?"})
+                    st.rerun()
+            return
+
+
+def _individual_details_inputs(current: dict) -> tuple[dict, bool]:
+    name = st.text_input("Name", value=current.get("name", ""))
+    date_of_birth = st.text_input("Date of birth", value=current.get("date_of_birth", ""), placeholder="DD/MM/YYYY")
+    address = st.text_area("Address", value=current.get("address", ""))
+    phone_number = st.text_input("Phone number", value=current.get("phone_number", ""))
+    job = st.text_input("Job", value=current.get("job", ""))
+    annual_income = st.text_input("Annual income", value=current.get("annual_income", ""))
+    submitted = st.form_submit_button("Continue", type="primary")
+    return (
+        {
+            **current,
+            "name": name.strip(),
+            "date_of_birth": date_of_birth.strip(),
+            "address": address.strip(),
+            "phone_number": phone_number.strip(),
+            "job": job.strip(),
+            "annual_income": annual_income.strip(),
+        },
+        submitted,
+    )
+
+
+def _business_details_inputs(current: dict) -> tuple[dict, bool]:
+    company_name = st.text_input("Company name", value=current.get("company_name", ""))
+    business_type = st.text_input("Business type", value=current.get("business_type", ""), placeholder="Manufacturing, retail, services...")
+    registered_address = st.text_area("Registered address", value=current.get("registered_address", ""))
+    contact_person = st.text_input("Contact person", value=current.get("contact_person", ""))
+    contact_phone = st.text_input("Contact phone", value=current.get("contact_phone", ""))
+    annual_turnover = st.text_input("Annual turnover", value=current.get("annual_turnover", ""))
+    employee_count = st.text_input("Employee count", value=current.get("employee_count", ""))
+    submitted = st.form_submit_button("Continue", type="primary")
+    return (
+        {
+            **current,
+            "company_name": company_name.strip(),
+            "business_type": business_type.strip(),
+            "registered_address": registered_address.strip(),
+            "contact_person": contact_person.strip(),
+            "contact_phone": contact_phone.strip(),
+            "annual_turnover": annual_turnover.strip(),
+            "employee_count": employee_count.strip(),
+        },
+        submitted,
+    )
+
+
+def _render_identity_document_uploader() -> None:
+    customer_type = st.session_state.collected.get("customer_type")
+    identity_label = "KYB" if customer_type == "business" else "KYC"
+    required_documents = _required_identity_documents(customer_type)
+    uploads = st.session_state.setdefault("identity_uploads", {})
+
+    with st.expander(f"{identity_label} document checklist", expanded=True):
+        st.markdown(_identity_compliance_rules(customer_type))
+        staged_files = {}
+        for doc_type in required_documents:
+            label = _display_label(doc_type).title()
+            existing_path = uploads.get(doc_type)
+            if existing_path:
+                st.success(f"{label} uploaded: `{Path(existing_path).name}`")
+            uploaded_file = st.file_uploader(
+                f"Upload {label}",
+                type=["txt", "pdf", "png", "jpg", "jpeg", "tiff", "bmp", "webp"],
+                key=f"identity_upload_{doc_type}",
+            )
+            if uploaded_file is not None:
+                staged_files[doc_type] = uploaded_file
+
+        missing_docs = [doc_type for doc_type in required_documents if not uploads.get(doc_type) and doc_type not in staged_files]
+        if missing_docs:
+            st.info("Upload all required documents before validation: " + ", ".join(_display_label(item) for item in missing_docs) + ".")
+            return
+
+        if st.button(f"Upload and analyze {identity_label} documents", type="primary", use_container_width=True):
+            for doc_type, uploaded_file in staged_files.items():
+                uploads[doc_type] = _save_uploaded_file_for_doc(uploaded_file, doc_type)
+            _run_identity_validation(customer_type, payload_user_inputs=st.session_state.collected.get("user_inputs") or {})
+            st.rerun()
+
+
+def _render_kyc_review() -> None:
+    report = st.session_state.get("pending_kyc_report")
+    if not report:
+        return
+    payload = report.json_report
+    identity_label = "KYB" if payload.get("customer_type") == "business" else "KYC"
+    with st.expander(f"{identity_label} details review", expanded=True):
+        by_document = payload.get("extracted_by_document") or {}
+        if by_document:
+            for document_type, fields in by_document.items():
+                st.markdown(f"**{_display_label(document_type).title()}**")
+                st.json(fields)
+        else:
+            st.info(f"No {identity_label} fields were parsed from the uploaded documents.")
+
+        st.markdown("**Summary**")
+        st.write(_kyc_review_summary(report))
+        _render_document_debug(payload)
+
+        can_approve = _kyc_details_align(payload)
+        if not can_approve:
+            st.warning(f"Some {identity_label} details need another look. You can re-upload only the exact document that needs correction below.")
+            _render_identity_reupload_controls(payload)
+            return
+
+        if st.button(f"Approve and store {identity_label} JSON", type="primary", use_container_width=True):
+            stored_path = _store_kyc_json(payload)
+            st.session_state.messages.append({"role": "assistant", "content": f"{identity_label} details approved and stored as JSON: `{stored_path}`."})
+            st.session_state.pending_kyc_report = None
+            st.session_state.collected = _empty_intake()
+            st.session_state.transcript = []
+            st.session_state.awaiting_document_followup = False
+            st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
+            st.rerun()
+
+
+def _render_identity_reupload_controls(payload: dict) -> None:
+    customer_type = payload.get("customer_type")
+    identity_label = "KYB" if customer_type == "business" else "KYC"
+    target_docs = _docs_to_reupload(payload)
+    if not target_docs:
+        target_docs = _required_identity_documents(customer_type)
+    st.markdown("**Upload corrected document**")
+    st.caption("Choose the corrected file, then press the button to upload and analyze it.")
+    staged_files = {}
+    for doc_type in target_docs:
+        uploaded_file = st.file_uploader(
+            f"Re-upload {_display_label(doc_type).title()}",
+            type=["txt", "pdf", "png", "jpg", "jpeg", "tiff", "bmp", "webp"],
+            key=f"reupload_{doc_type}",
+        )
+        if uploaded_file is not None:
+            staged_files[doc_type] = uploaded_file
+
+    if staged_files and st.button(f"Upload correction and analyze {identity_label}", type="primary", use_container_width=True):
+        for doc_type, uploaded_file in staged_files.items():
+            st.session_state.identity_uploads[doc_type] = _save_uploaded_file_for_doc(uploaded_file, doc_type)
+        _run_identity_validation(customer_type, payload_user_inputs=payload.get("user_inputs") or {}, correction=True)
+        st.rerun()
+
+
+def _handle_chat_input() -> None:
+    user_text = st.chat_input("Message the assistant")
+    if user_text:
+        _submit_user_text(user_text)
+
+
+def _submit_user_text(user_text: str) -> None:
+    st.session_state.messages.append({"role": "user", "content": user_text})
+    st.session_state.pending_user_text = user_text
+    st.session_state.selected_option = None
+    st.session_state.show_options = False
+    st.rerun()
+
+
+def _select_option(value: str) -> None:
+    missing = _missing_fields(st.session_state.collected)
+    st.session_state.selected_option = None
+    st.session_state.show_options = False
+    if "customer_type" in missing:
+        st.session_state.collected["customer_type"] = value
+    elif "workflow_type" in missing:
+        st.session_state.collected["workflow_type"] = value
+    elif "insurance_category" in missing:
+        st.session_state.collected["insurance_category"] = value
+    elif "claim_type" in missing:
+        st.session_state.collected["case_type"] = value
+    else:
+        _submit_user_text(_option_user_text(value))
+        return
+
+    st.session_state.collected = _normalize_intake(st.session_state.collected)
+    st.session_state.messages.append({"role": "user", "content": _option_user_text(value)})
+    report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
+    if report:
+        _handle_report(report)
+    else:
+        question = next_assistant_question(st.session_state.orchestrator, st.session_state.collected)
+        if question:
+            st.session_state.messages.append({"role": "assistant", "content": question})
+            st.session_state.show_options = _question_needs_options(st.session_state.collected)
+    st.rerun()
+
+
+def _handle_report(report) -> None:
+    st.session_state.report = report
+    st.session_state.messages.append({"role": "assistant", "content": _report_summary(report)})
+    if _is_policy_report(report):
+        st.session_state.pending_policy_report = report
+        st.session_state.policy_application_approved = False
+        st.session_state.messages.append({"role": "assistant", "content": _policy_approval_prompt(report)})
+    elif _is_identity_report(report):
+        st.session_state.pending_kyc_report = report
+        st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
+        st.session_state.awaiting_document_followup = not _kyc_details_align(report.json_report)
+    elif _should_continue_document_workflow(report):
+        st.session_state.collected = _prepare_followup_intake(st.session_state.collected, report)
+        st.session_state.transcript = []
+        st.session_state.messages.append({"role": "assistant", "content": _followup_prompt(report)})
+    else:
+        st.session_state.collected = _empty_intake()
+        st.session_state.transcript = []
+        st.session_state.selected_option = None
+        st.session_state.messages.append({"role": "assistant", "content": "What would you like to process next?"})
+
+
+def _current_options() -> list[dict[str, str]]:
+    missing = _missing_fields(st.session_state.collected)
+    customer_type = st.session_state.collected.get("customer_type")
+    workflow_type = st.session_state.collected.get("workflow_type")
+
+    if "user details" in missing or "business details" in missing:
+        return []
+    if "customer_type" in missing:
+        return [
+            {"label": "Individual", "value": "individual"},
+            {"label": "Business", "value": "business"},
+        ]
+    if "workflow_type" in missing:
+        return [
+            {"label": item["label"].title(), "value": item["workflow_type"]}
+            for item in get_supported_workflows(customer_type)["workflows"]
+        ]
+    if "insurance_category" in missing:
+        categories = get_insurance_categories(customer_type)["categories"]
+        if isinstance(categories, dict):
+            categories = categories.get(customer_type or "individual", [])
+        return [{"label": _display_label(value).title(), "value": value} for value in categories]
+    if "claim_type" in missing:
+        claim_types = get_claim_types(customer_type)["claim_types"]
+        if isinstance(claim_types, dict):
+            claim_types = claim_types.get(customer_type or "individual", [])
+        return [{"label": _display_label(value).title(), "value": value} for value in claim_types]
+    return []
+
+
+def _option_user_text(value: str) -> str:
+    if value == "new_insurance":
+        return "I want a new policy"
+    if value == "claim_validation":
+        return "I want to validate claim documents"
+    if value == "kyc_validation":
+        return "I want to complete KYC validation"
+    if value == "kyb_validation":
+        return "I want to complete KYB validation"
+    return _display_label(value)
+
+
+def _save_uploaded_files(uploaded_files) -> list[str]:
+    output_dir = Path("outputs/uploads") / st.session_state.upload_session_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for uploaded_file in uploaded_files:
+        target = output_dir / uploaded_file.name
+        target.write_bytes(uploaded_file.getbuffer())
+        paths.append(str(target))
+    return paths
+
+
+def _save_uploaded_file_for_doc(uploaded_file, doc_type: str) -> str:
+    output_dir = Path("outputs/uploads") / st.session_state.upload_session_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", uploaded_file.name)
+    target = output_dir / f"{doc_type}_{safe_name}"
+    target.write_bytes(uploaded_file.getbuffer())
+    return str(target)
+
+
+def _run_identity_validation(customer_type: str | None, *, payload_user_inputs: dict, correction: bool = False) -> None:
+    identity_label = "KYB" if customer_type == "business" else "KYC"
+    required_documents = _required_identity_documents(customer_type)
+    uploads = st.session_state.get("identity_uploads") or {}
+    missing_docs = [doc_type for doc_type in required_documents if not uploads.get(doc_type)]
+    if missing_docs:
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": "I still need these documents before analysis: "
+                + ", ".join(_display_label(item) for item in missing_docs)
+                + ".",
+            }
+        )
+        return
+
+    st.session_state.collected = {
+        **_empty_intake(),
+        "customer_type": customer_type,
+        "workflow_type": "kyb_validation" if customer_type == "business" else "kyc_validation",
+        "case_type": "kyb" if customer_type == "business" else "kyc",
+        "user_inputs": payload_user_inputs,
+        "file_paths": [uploads[doc_type] for doc_type in required_documents],
+        "ready_to_run": True,
+    }
+    st.session_state.collected = _normalize_intake(st.session_state.collected)
+    user_message = f"Uploaded corrected {identity_label} document and requested analysis." if correction else f"Uploaded all required {identity_label} documents and requested analysis."
+    st.session_state.messages.append({"role": "user", "content": user_message})
+    report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
+    if report:
+        st.session_state.report = report
+        st.session_state.pending_kyc_report = report
+        st.session_state.messages.append({"role": "assistant", "content": _report_summary(report)})
+        st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
+        st.session_state.awaiting_document_followup = not _kyc_details_align(report.json_report)
+
+
+def _required_identity_documents(customer_type: str | None) -> list[str]:
+    workflow_type = "kyb_validation" if customer_type == "business" else "kyc_validation"
+    case_type = "kyb" if customer_type == "business" else "kyc"
+    return get_required_documents(customer_type, workflow_type, case_type)["required_documents"]
+
+
+def _identity_compliance_rules(customer_type: str | None) -> str:
+    if customer_type == "business":
+        return (
+            "**Compliance rules for KYB upload**\n\n"
+            "- Upload one file for every listed business verification document.\n"
+            "- Company name, PAN/GSTIN, registered address, authorized signatory, ownership, and bank details must be readable.\n"
+            "- Documents should belong to the same legal entity and current bank account.\n"
+            "- If a discrepancy is found, re-upload only the exact document named in the review."
+        )
+    return (
+        "**Compliance rules for KYC upload**\n\n"
+        "- Upload one file for PAN and one file for identity proof.\n"
+        "- Name, date of birth, Aadhaar/identity number, address, and phone details must be readable where present.\n"
+        "- User-entered details should match the uploaded documents.\n"
+        "- If a discrepancy is found, re-upload only the exact document named in the review."
+    )
+
+
+def _best_policy(payload: dict) -> dict | None:
+    recommendations = payload.get("recommendations") or []
+    if not recommendations:
+        return None
+    user_inputs = payload.get("user_inputs") or {}
+    return max(recommendations, key=lambda item: _policy_score(item, user_inputs))
+
+
+def _policy_score(policy: dict, user_inputs: dict) -> int:
+    score = len(policy.get("coverage_highlights") or []) * 3
+    eligibility = policy.get("eligibility") or {}
+    lowered_inputs = " ".join(str(value).lower() for value in user_inputs.values())
+    for value in eligibility.values():
+        if isinstance(value, str) and value.lower() in lowered_inputs:
+            score += 4
+        elif value is True:
+            score += 1
+    if policy.get("required_documents"):
+        score += 1
+    return score
+
+
+def _best_policy_box(policy: dict, payload: dict) -> str:
+    reason = _policy_reason(policy, payload.get("user_inputs") or {})
+    return f"""
+    <div class="best-policy-box">
+      <div class="best-policy-label">Best match</div>
+      <h3>{policy["scheme_name"]}</h3>
+      <p>{policy.get("description", "")}</p>
+      <p><strong>Why this one:</strong> {reason}</p>
+    </div>
+    """
+
+
+def _policy_detail_markdown(policy: dict, is_best: bool = False) -> str:
+    highlights = "\n".join(f"- {item}" for item in policy.get("coverage_highlights") or []) or "- Not specified"
+    documents = "\n".join(f"- {_display_label(item)}" for item in policy.get("required_documents") or []) or "- Not specified"
+    eligibility = "\n".join(f"- {_display_label(str(key))}: {value}" for key, value in (policy.get("eligibility") or {}).items()) or "- Standard underwriting applies"
+    best_line = "\n**Recommended choice:** This is the strongest fit based on the submitted details.\n" if is_best else ""
+    return (
+        f"{best_line}\n"
+        f"**Policy ID:** `{policy.get('scheme_id')}`\n\n"
+        f"**Description:** {policy.get('description')}\n\n"
+        f"**Coverage highlights**\n{highlights}\n\n"
+        f"**Eligibility signals**\n{eligibility}\n\n"
+        f"**Documents needed for application**\n{documents}\n\n"
+        f"**Next step:** {policy.get('recommended_next_step')}"
+    )
+
+
+def _policy_reason(policy: dict, user_inputs: dict) -> str:
+    highlights = policy.get("coverage_highlights") or []
+    category_context = ", ".join(highlights[:3]).lower()
+    if user_inputs:
+        return f"it matches the requested insurance type and gives strong coverage around {category_context}, with documents that fit the details already collected."
+    return f"it provides the broadest useful coverage in this category, especially around {category_context}."
+
+
+def _answer_policy_question(report, question: str) -> str:
+    payload = report.json_report
+    best_policy = _best_policy(payload)
+    recommendations = payload.get("recommendations") or []
+    normalized = question.lower()
+    if not recommendations:
+        return "I could not find matching policies for this category. Try another insurance type or update the details."
+    if "why" in normalized or "best" in normalized or "recommend" in normalized:
+        return f"I recommend **{best_policy['scheme_name']}** because {_policy_reason(best_policy, payload.get('user_inputs') or {})}"
+    if "document" in normalized:
+        docs = best_policy.get("required_documents") or []
+        return "For the recommended policy, the application documents are: " + ", ".join(_display_label(doc) for doc in docs) + "."
+    if "cover" in normalized or "coverage" in normalized:
+        return f"**{best_policy['scheme_name']}** covers: " + ", ".join(best_policy.get("coverage_highlights") or []) + "."
+    if "eligib" in normalized:
+        eligibility = best_policy.get("eligibility") or {}
+        return "Eligibility signals for the recommended policy: " + ", ".join(f"{_display_label(str(key))}: {value}" for key, value in eligibility.items()) + "."
+    return (
+        f"The best fit is **{best_policy['scheme_name']}**. "
+        f"{best_policy.get('description')} Next step: {best_policy.get('recommended_next_step')}"
+    )
+
+
+def _policy_approval_requested(text: str) -> bool:
+    normalized = text.lower().strip()
+    return any(phrase in normalized for phrase in ["approve", "proceed", "continue", "looks good", "go ahead"])
+
+
+def _start_identity_workflow_from_policy(report) -> None:
+    payload = report.json_report
+    customer_type = payload.get("customer_type") or "individual"
+    identity_workflow = "kyb_validation" if customer_type == "business" else "kyc_validation"
+    identity_case = "kyb" if customer_type == "business" else "kyc"
+    best_policy = _best_policy(payload)
+    details = {
+        **(payload.get("user_inputs") or {}),
+        "recommended_policy_ids": [item["scheme_id"] for item in payload.get("recommendations") or []],
+        "selected_policy_id": best_policy.get("scheme_id") if best_policy else None,
+    }
+    st.session_state.pending_policy_report = None
+    st.session_state.policy_application_approved = False
+    st.session_state.identity_uploads = {}
+    st.session_state.collected = {
+        **_empty_intake(),
+        "customer_type": customer_type,
+        "workflow_type": identity_workflow,
+        "case_type": identity_case,
+        "user_inputs": details,
+        "ready_to_run": False,
+    }
+    st.session_state.transcript = []
+    st.session_state.messages.append({"role": "user", "content": "Approved policy recommendation."})
+    st.session_state.messages.append({"role": "assistant", "content": _identity_upload_prompt(customer_type)})
+
+
+def _report_summary(report) -> str:
+    payload = report.json_report
+    if report.report_type == "new_insurance":
+        names = ", ".join(item["scheme_name"] for item in payload["recommendations"]) or "no matching schemes"
+        return f"Product discovery is complete. Recommended schemes: {names}."
+    if payload.get("customer_type") == "individual" and payload.get("workflow_type") == "kyc_validation":
+        return "KYC documents have been parsed. Please review the extracted details before approval."
+    if payload.get("customer_type") == "business" and payload.get("workflow_type") == "kyb_validation":
+        return "KYB documents have been parsed. Please review the extracted business details before approval."
+    missing = ", ".join(payload["missing_documents"]) or "none"
+    if (
+        payload.get("customer_type") == "individual"
+        and payload.get("workflow_type") == "claim_validation"
+        and payload.get("status") == "Ready for Submission"
+    ):
+        return "Claim validation is complete. Everything looks fine, and the claim has been generated."
+    return f"Validation complete. Status: {payload['status']}. Missing documents: {missing}."
+
+
+def _is_policy_report(report) -> bool:
+    payload = report.json_report
+    return report.report_type == "new_insurance" and payload.get("customer_type") in {"individual", "business"}
+
+
+def _policy_approval_prompt(report) -> str:
+    payload = report.json_report
+    identity_label = "KYB" if payload.get("customer_type") == "business" else "KYC"
+    return f"Please review the recommended policy. If you approve it, I will continue to {identity_label} verification."
+
+
+def _is_identity_report(report) -> bool:
+    payload = report.json_report
+    return (
+        report.report_type in {"kyc_validation", "kyb_validation"}
+        and payload.get("customer_type") in {"individual", "business"}
+    )
+
+
+def _is_claim_intake(collected: dict) -> bool:
+    return collected.get("workflow_type") == "claim_validation"
+
+
+def _is_individual_kyc_intake(collected: dict) -> bool:
+    return collected.get("customer_type") == "individual" and collected.get("workflow_type") == "kyc_validation"
+
+
+def _is_business_kyb_intake(collected: dict) -> bool:
+    return collected.get("customer_type") == "business" and collected.get("workflow_type") == "kyb_validation"
+
+
+def _is_identity_intake(collected: dict) -> bool:
+    return _is_individual_kyc_intake(collected) or _is_business_kyb_intake(collected)
+
+
+def _identity_upload_prompt(customer_type: str) -> str:
+    if customer_type == "business":
+        return (
+            "Please upload business KYB documents: incorporation certificate, company PAN, GST certificate, "
+            "registered address proof, board resolution, authorized signatory ID/address proof, beneficial ownership declaration, and bank proof."
+        )
+    return "Please upload PAN card and Aadhaar card PDF or image files for KYC verification."
+
+
+def _should_continue_document_workflow(report) -> bool:
+    payload = report.json_report
+    return (
+        payload.get("customer_type") in {"individual", "business"}
+        and payload.get("workflow_type") in {"claim_validation", "kyc_validation", "kyb_validation"}
+        and payload.get("status") != "Ready for Submission"
+    )
+
+
+def _prepare_followup_intake(collected: dict, report) -> dict:
+    payload = report.json_report
+    updated = dict(collected)
+    updated["customer_type"] = payload.get("customer_type") or updated.get("customer_type")
+    updated["workflow_type"] = payload.get("workflow_type") or updated.get("workflow_type")
+    updated["case_type"] = payload.get("case_type") or updated.get("case_type")
+    updated["ready_to_run"] = False
+    if payload.get("missing_documents"):
+        st.session_state.awaiting_document_followup = True
+    return updated
+
+
+def _followup_prompt(report) -> str:
+    payload = report.json_report
+    missing = payload.get("missing_documents") or []
+    issues = payload.get("validation_issues") or []
+    if missing:
+        return "Please upload the missing documents: " + ", ".join(missing) + "."
+    if issues:
+        first_issue = issues[0].get("message", "Some details need correction")
+        return f"{first_issue}. Please provide corrected documents or details."
+    return "Please provide the requested correction so I can continue this workflow."
+
+
+def _question_needs_options(collected: dict) -> bool:
+    missing = _missing_fields(collected)
+    if "user details" in missing or "business details" in missing:
+        return False
+    return any(
+        item in missing
+        for item in [
+            "customer_type",
+            "workflow_type",
+            "insurance_category",
+            "claim_type",
+        ]
+    )
+
+
+def _kyc_review_summary(report) -> str:
+    payload = report.json_report
+    identity_label = "KYB" if payload.get("customer_type") == "business" else "KYC"
+    if _documents_uploaded_but_unparsed(payload):
+        return (
+            f"The document was uploaded, but no readable {identity_label} fields were extracted. "
+            "Use clearer images or run the app with a vision-capable model such as Gemma 4 so identity documents can be parsed directly."
+        )
+    llm_summary = st.session_state.orchestrator.llm_client.summarize_kyc_fields(
+        {
+            "status": payload.get("status"),
+            "user_inputs": payload.get("user_inputs"),
+            "extracted_by_document": payload.get("extracted_by_document"),
+            "extracted_key_fields": payload.get("extracted_key_fields"),
+            "validation_issues": payload.get("validation_issues"),
+        }
+    )
+    if llm_summary:
+        return llm_summary
+
+    fields = payload.get("extracted_key_fields") or {}
+    issues = payload.get("validation_issues") or []
+    missing = payload.get("missing_documents") or []
+    field_text = ", ".join(f"{_display_label(key)}: {value}" for key, value in fields.items()) or "no fields parsed yet"
+    if _kyc_details_align(payload):
+        return f"Good news, the {identity_label} check looks consistent. I found these details: {field_text}. You can approve and store the verified JSON."
+    issue_text = "; ".join(issue.get("message", "issue found") for issue in issues)
+    missing_text = ", ".join(_display_label(item) for item in missing)
+    review_parts = []
+    if missing_text:
+        review_parts.append(f"missing documents: {missing_text}")
+    if issue_text:
+        review_parts.append(f"details to correct: {issue_text}")
+    return f"I parsed these {identity_label} details: {field_text}. I need a corrected upload because " + "; ".join(review_parts or ["some required details could not be verified"]) + "."
+
+
+def _documents_uploaded_but_unparsed(payload: dict) -> bool:
+    if payload.get("document_debug") and not payload.get("extracted_key_fields"):
+        return True
+    trace = payload.get("trace") or []
+    parsed_steps = [item for item in trace if item.get("agent") == "Document Intake Agent"]
+    parsed_count = 0
+    if parsed_steps:
+        parsed_count = int(parsed_steps[-1].get("details", {}).get("count") or 0)
+    return parsed_count > 0 and not payload.get("extracted_key_fields")
+
+
+def _render_document_debug(payload: dict) -> None:
+    debug_rows = payload.get("document_debug") or []
+    if not debug_rows:
+        return
+    with st.expander("Extraction diagnostics", expanded=False):
+        for row in debug_rows:
+            st.markdown(f"**{row.get('file_name', 'Uploaded document')}**")
+            metric_cols = st.columns(4)
+            metric_cols[0].metric("Method", row.get("extraction_method") or "unknown")
+            metric_cols[1].metric("Text chars", row.get("text_length") or 0)
+            metric_cols[2].metric("OCR tries", row.get("ocr_attempt_count") or 0)
+            metric_cols[3].metric("Vision", "yes" if row.get("vision_fallback_succeeded") else "no")
+            if row.get("ocr_best_attempt"):
+                st.caption(f"OCR best: {row['ocr_best_attempt']}")
+            if row.get("text_preview"):
+                st.code(row["text_preview"], language="text")
+            warnings = row.get("warnings") or []
+            if warnings:
+                st.warning("; ".join(str(item) for item in warnings))
+
+
+def _kyc_details_align(payload: dict) -> bool:
+    if payload.get("missing_documents"):
+        return False
+    serious_issues = [
+        issue
+        for issue in payload.get("validation_issues", [])
+        if issue.get("severity") in {"medium", "high"} or "mismatch" in issue.get("message", "").lower()
+    ]
+    return not serious_issues
+
+
+def _docs_to_reupload(payload: dict) -> list[str]:
+    required = _required_identity_documents(payload.get("customer_type"))
+    docs = [doc for doc in payload.get("missing_documents") or [] if doc in required]
+    field_to_docs = _identity_field_document_map(payload.get("customer_type"))
+    for issue in payload.get("validation_issues") or []:
+        field = issue.get("field")
+        docs.extend(field_to_docs.get(field, []))
+        message = issue.get("message", "").lower()
+        for doc_type in required:
+            if doc_type.replace("_", " ") in message or doc_type in message:
+                docs.append(doc_type)
+    ordered_unique = []
+    for doc_type in docs:
+        if doc_type in required and doc_type not in ordered_unique:
+            ordered_unique.append(doc_type)
+    return ordered_unique
+
+
+def _identity_field_document_map(customer_type: str | None) -> dict[str, list[str]]:
+    if customer_type == "business":
+        return {
+            "company_name": ["certificate_of_incorporation", "company_pan", "gst_certificate"],
+            "pan_number": ["company_pan"],
+            "gstin": ["gst_certificate"],
+            "registered_address": ["registered_address_proof"],
+            "authorized_signatory": ["board_resolution", "authorized_signatory_id_proof"],
+            "bank_account_holder": ["bank_account_proof"],
+            "user_details": ["certificate_of_incorporation", "registered_address_proof"],
+        }
+    return {
+        "customer_name": ["pan", "identity_proof"],
+        "name": ["pan", "identity_proof"],
+        "date_of_birth": ["identity_proof", "pan"],
+        "pan_number": ["pan"],
+        "aadhaar_number": ["identity_proof"],
+        "address": ["identity_proof"],
+        "phone_number": ["identity_proof"],
+        "user_details": ["pan", "identity_proof"],
+    }
+
+
+def _store_kyc_json(payload: dict) -> str:
+    output_dir = Path("outputs/kyb_profiles" if payload.get("customer_type") == "business" else "outputs/kyc_profiles")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_id = payload.get("report_id") or uuid4().hex[:10]
+    target = output_dir / f"{report_id}.json"
+    stored_payload = {
+        "report_id": payload.get("report_id"),
+        "customer_type": payload.get("customer_type"),
+        "approved": True,
+        "user_inputs": payload.get("user_inputs") or {},
+        "extracted_by_document": payload.get("extracted_by_document") or {},
+        "extracted_key_fields": payload.get("extracted_key_fields") or {},
+        "summary": _kyc_review_summary(st.session_state.pending_kyc_report),
+    }
+    target.write_text(json.dumps(stored_payload, indent=2), encoding="utf-8")
+    return str(target)
+
+
+def _validate_application_details(details: dict, customer_type: str) -> dict:
+    local_issues = _local_user_detail_issues(details, customer_type)
+    if local_issues:
+        return {"is_valid": False, "issues": local_issues, "normalized_details": details}
+
+    if customer_type == "business":
+        return {"is_valid": True, "issues": [], "normalized_details": details}
+
+    llm_result = st.session_state.orchestrator.llm_client.validate_application_details(details)
+    if isinstance(llm_result, dict) and "is_valid" in llm_result:
+        return {
+            "is_valid": bool(llm_result.get("is_valid")),
+            "issues": [str(issue) for issue in llm_result.get("issues") or []],
+            "normalized_details": llm_result.get("normalized_details") or details,
+        }
+
+    return {"is_valid": True, "issues": [], "normalized_details": details}
+
+
+def _local_user_detail_issues(details: dict, customer_type: str) -> list[str]:
+    issues = []
+    required_fields = REQUIRED_BUSINESS_USER_FIELDS if customer_type == "business" else REQUIRED_INDIVIDUAL_USER_FIELDS
+    for field in required_fields:
+        if not str(details.get(field) or "").strip():
+            issues.append(f"{_display_label(field)} is required")
+    phone_field = "contact_phone" if customer_type == "business" else "phone_number"
+    if details.get(phone_field) and not _valid_phone(str(details.get(phone_field) or "")):
+        issues.append(f"{_display_label(phone_field)} should be 10 to 15 digits")
+    if customer_type == "individual" and details.get("annual_income") and _income_value(details.get("annual_income")) <= 0:
+        issues.append("annual income should be greater than zero")
+    if customer_type == "business" and details.get("annual_turnover") and _income_value(details.get("annual_turnover")) <= 0:
+        issues.append("annual turnover should be greater than zero")
+    if customer_type == "business" and details.get("employee_count") and _income_value(details.get("employee_count")) <= 0:
+        issues.append("employee count should be greater than zero")
+    return issues
+
+
+def _valid_phone(value: str) -> bool:
+    digits = re.sub(r"\D+", "", value)
+    return 10 <= len(digits) <= 15
+
+
+def _income_value(value) -> int:
+    digits = re.sub(r"\D+", "", str(value or ""))
+    return int(digits) if digits else 0
+
+
+def _display_label(value: str) -> str:
+    return value.replace("_", " ")
+
+
+def _inject_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            max-width: 860px;
+            padding-top: 2.2rem;
+            padding-bottom: 6rem;
+        }
+        .hero {
+            text-align: center;
+            margin: 0 auto 1.4rem auto;
+        }
+        .hero h1 {
+            font-size: 2.1rem;
+            margin-bottom: 0.35rem;
+            letter-spacing: 0;
+        }
+        .hero p {
+            color: #5f6368;
+            font-size: 1rem;
+            margin: 0 auto;
+            max-width: 620px;
+        }
+        div[data-testid="stChatMessage"] {
+            border-radius: 8px;
+        }
+        .best-policy-box {
+            border: 1px solid #7bb7ff;
+            background: #eaf4ff;
+            border-radius: 8px;
+            padding: 1rem 1.1rem;
+            margin: 0.4rem 0 1rem 0;
+            color: #12324f;
+        }
+        .best-policy-box h3 {
+            margin: 0.2rem 0 0.45rem 0;
+            font-size: 1.15rem;
+            letter-spacing: 0;
+        }
+        .best-policy-box p {
+            margin: 0.35rem 0;
+        }
+        .best-policy-label {
+            display: inline-block;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: #075ca8;
+            text-transform: uppercase;
+            letter-spacing: 0;
+        }
+        div[data-testid="stButton"] button {
+            min-height: 3.2rem;
+            border-radius: 8px;
+            white-space: normal;
+        }
+        div[class*="st-key-option_"] button {
+            min-height: 2.4rem;
+            border-radius: 999px;
+            padding: 0.35rem 0.85rem;
+            font-size: 0.92rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+
+========================================================================
+FILE 05: agents/database.py
+========================================================================
+
+from db.database import DatabaseAgent
+
+__all__ = ["DatabaseAgent"]
+
+
+========================================================================
+FILE 06: agents/document_classifier.py
+========================================================================
+
+from __future__ import annotations
+
+from document_processing.classifier import classify_document
+from orchestrator.trace import WorkflowTrace
+from schemas.messages import ClassifiedDocumentMessage, ParsedDocumentMessage
+
+
+class DocumentClassifierAgent:
+    name = "Document Classifier Agent"
+
+    def classify(self, message: ParsedDocumentMessage, trace: WorkflowTrace) -> ClassifiedDocumentMessage:
+        documents = [classify_document(dict(document)) for document in message.documents]
+        trace.add(self.name, "classified_documents", {"types": [d.get("document_type") for d in documents]})
+        return ClassifiedDocumentMessage(session_id=message.session_id, documents=documents)
+
+
+========================================================================
+FILE 07: agents/document_intake.py
+========================================================================
+
+from __future__ import annotations
+
+from document_processing.intake import parse_document
+from orchestrator.trace import WorkflowTrace
+from schemas.messages import DocumentPacketMessage, ParsedDocumentMessage
+
+
+class DocumentIntakeAgent:
+    name = "Document Intake Agent"
+
+    def parse(self, message: DocumentPacketMessage, trace: WorkflowTrace, llm_client=None) -> ParsedDocumentMessage:
+        vision_extractor = getattr(llm_client, "extract_document_fields_from_file", None)
+        prefer_vision = message.customer_type == "individual" and message.workflow_type == "kyc_validation"
+        documents = [
+            parse_document(path, vision_extractor=vision_extractor, prefer_vision=prefer_vision)
+            for path in message.file_paths
+        ]
+        trace.add(
+            self.name,
+            "parsed_documents",
+            {
+                "count": len(documents),
+                "ocr_used": [d["ocr_used"] for d in documents],
+                "vision_preferred": prefer_vision,
+                "vision_fallback": [d.get("vision_fallback_succeeded", False) for d in documents],
+                "documents": [_document_debug_summary(document) for document in documents],
+            },
+        )
+        return ParsedDocumentMessage(session_id=message.session_id, documents=documents)
+
+
+def _document_debug_summary(document):
+    debug = document.get("debug", {})
+    ocr_debug = debug.get("ocr", {})
+    attempts = ocr_debug.get("attempts", [])
+    return {
+        "file_name": document.get("file_name"),
+        "exists": document.get("exists"),
+        "document_type": document.get("document_type"),
+        "extraction_method": document.get("extraction_method"),
+        "confidence": document.get("confidence"),
+        "text_length": debug.get("text_length"),
+        "text_preview": debug.get("text_preview"),
+        "file_size_bytes": debug.get("file_size_bytes"),
+        "tesseract_path": ocr_debug.get("tesseract_path"),
+        "ocr_attempt_count": len(attempts),
+        "ocr_best_attempt": ocr_debug.get("best_attempt"),
+        "preprocessing_available": ocr_debug.get("preprocessing_available"),
+        "vision_fallback_attempted": debug.get("vision_fallback_attempted", document.get("vision_fallback_attempted", False)),
+        "vision_fallback_succeeded": debug.get("vision_fallback_succeeded", document.get("vision_fallback_succeeded", False)),
+        "vision_preferred": debug.get("vision_preferred", False),
+        "vision_latency_ms": debug.get("vision_latency_ms"),
+        "warnings": [*debug.get("warnings", []), *ocr_debug.get("warnings", [])],
+    }
+
+
+========================================================================
+FILE 08: agents/escalation.py
+========================================================================
+
+from __future__ import annotations
+
+from orchestrator.trace import WorkflowTrace
+from schemas.messages import ValidationResultMessage
+
+
+class EscalationAgent:
+    name = "Escalation Agent"
+
+    def decide(self, message: ValidationResultMessage, trace: WorkflowTrace) -> ValidationResultMessage:
+        trace.add(self.name, "decided_escalation", {"human_review_required": message.human_review_required})
+        return message
+
+
+========================================================================
+FILE 09: agents/extraction.py
+========================================================================
+
+from __future__ import annotations
+
+from document_processing.extraction import extract_fields
+from orchestrator.trace import WorkflowTrace
+from schemas.messages import ClassifiedDocumentMessage, ExtractionResultMessage
+
+
+class ExtractionAgent:
+    name = "Extraction Agent"
+
+    def extract(self, message: ClassifiedDocumentMessage, trace: WorkflowTrace) -> ExtractionResultMessage:
+        extracted_fields, evidence, confidence = extract_fields(message.documents)
+        trace.add(self.name, "extracted_fields", {"fields": sorted(extracted_fields.get("canonical", {}).keys())})
+        return ExtractionResultMessage(
+            session_id=message.session_id,
+            extracted_fields=extracted_fields,
+            evidence=evidence,
+            confidence=confidence,
+        )
+
+
+========================================================================
+FILE 10: agents/product_discovery.py
+========================================================================
+
+from __future__ import annotations
+
+from mcp_server.client import get_business_insurance_schemes, get_individual_insurance_schemes
+from orchestrator.trace import WorkflowTrace
+from schemas.messages import ProductDiscoveryMessage, ProductRecommendationMessage
+
+
+class ProductDiscoveryAgent:
+    name = "Product Discovery Agent"
+
+    def recommend(self, message: ProductDiscoveryMessage, trace: WorkflowTrace) -> ProductRecommendationMessage:
+        if message.customer_type == "business":
+            recommendations = get_business_insurance_schemes(message.insurance_category, message.user_inputs)
+        else:
+            recommendations = get_individual_insurance_schemes(message.insurance_category, message.user_inputs)
+        trace.add(self.name, "called_mock_mcp_catalogue", {"category": message.insurance_category, "count": len(recommendations)})
+        return ProductRecommendationMessage(
+            session_id=message.session_id,
+            customer_type=message.customer_type,
+            insurance_category=message.insurance_category,
+            user_inputs=message.user_inputs,
+            recommendations=recommendations,
+        )
+
+
+========================================================================
+FILE 11: agents/reconciliation.py
+========================================================================
+
+from __future__ import annotations
+
+from collections import defaultdict
+import re
+from typing import Any
+
+from orchestrator.trace import WorkflowTrace
+from schemas.messages import ExtractionResultMessage, ReconciliationMessage
+
+
+class ReconciliationAgent:
+    name = "Reconciliation Agent"
+
+    def reconcile(self, message: ExtractionResultMessage, trace: WorkflowTrace) -> ReconciliationMessage:
+        inconsistencies: list[dict[str, Any]] = []
+        canonical_fields = message.extracted_fields.get("canonical", {})
+        for field_name, values in message.extracted_fields.get("by_field", {}).items():
+            grouped = defaultdict(list)
+            for item in values:
+                grouped[_normalize(field_name, item["value"])].append(item["document_type"])
+            if len(grouped) > 1:
+                inconsistencies.append(
+                    {
+                        "severity": "medium",
+                        "field": field_name,
+                        "message": f"{field_name} mismatch across documents",
+                        "values": dict(grouped),
+                    }
+                )
+        trace.add(self.name, "reconciled_fields", {"inconsistency_count": len(inconsistencies)})
+        return ReconciliationMessage(
+            session_id=message.session_id,
+            inconsistencies=inconsistencies,
+            canonical_fields=canonical_fields,
+        )
+
+
+def _normalize(field_name: str, value: str) -> str:
+    if field_name in {"aadhaar_number", "phone_number"}:
+        return re.sub(r"\D", "", value)
+    if field_name in {"pan_number", "gstin"}:
+        return re.sub(r"[^A-Z0-9]", "", value.upper())
+    return " ".join(value.lower().replace(".", "").replace(",", "").split())
+
+
+========================================================================
+FILE 12: agents/report.py
+========================================================================
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+from llm import VLLMClient
+from orchestrator.trace import WorkflowTrace
+from schemas.messages import ExtractionResultMessage, ReportMessage, ValidationResultMessage
+
+
+class ReportAgent:
+    name = "Report Agent"
+
+    def __init__(self, llm_client: VLLMClient | None = None) -> None:
+        self.llm_client = llm_client or VLLMClient.from_config()
+
+    def validation_report(
+        self,
+        customer_type: str,
+        workflow_type: str,
+        case_type: str,
+        validation: ValidationResultMessage,
+        extraction: ExtractionResultMessage,
+        trace: WorkflowTrace,
+        *,
+        user_inputs: dict[str, Any] | None = None,
+        incident_description: str | None = None,
+    ) -> ReportMessage:
+        report_id = f"RPT-{uuid4().hex[:10].upper()}"
+        json_report: dict[str, Any] = {
+            "report_id": report_id,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "workflow_type": workflow_type,
+            "customer_type": customer_type,
+            "case_type": case_type,
+            "status": validation.status,
+            "confidence": validation.confidence,
+            "human_review_required": validation.human_review_required,
+            "missing_documents": validation.missing_documents,
+            "validation_issues": validation.issues,
+            "extracted_key_fields": extraction.extracted_fields.get("canonical", {}),
+            "extracted_by_document": _group_extracted_fields_by_document(extraction.extracted_fields.get("by_field", {})),
+            "document_debug": _document_debug_from_trace(trace),
+            "user_inputs": user_inputs or {},
+            "incident_description": incident_description,
+            "evidence": extraction.evidence,
+            "next_action": validation.next_action,
+            "trace": trace.to_list(),
+        }
+        llm_explanation = self.llm_client.explain_report(json_report)
+        if llm_explanation:
+            json_report["llm_explanation"] = llm_explanation
+        markdown = _markdown_validation_report(json_report)
+        trace.add(self.name, "generated_validation_report", {"report_id": report_id})
+        return ReportMessage(
+            session_id=validation.session_id,
+            report_id=report_id,
+            report_type=workflow_type,
+            json_report=json_report,
+            markdown_report=markdown,
+        )
+
+    def product_report(self, recommendation_message, trace: WorkflowTrace) -> ReportMessage:
+        report_id = f"REC-{uuid4().hex[:10].upper()}"
+        json_report = {
+            "report_id": report_id,
+            "workflow_type": "new_insurance",
+            "customer_type": recommendation_message.customer_type,
+            "category": recommendation_message.insurance_category,
+            "user_inputs": recommendation_message.user_inputs,
+            "recommendations": recommendation_message.recommendations,
+            "trace": trace.to_list(),
+        }
+        llm_explanation = self.llm_client.explain_report(json_report)
+        if llm_explanation:
+            json_report["llm_explanation"] = llm_explanation
+        markdown = _markdown_product_report(json_report)
+        trace.add(self.name, "generated_product_report", {"report_id": report_id})
+        return ReportMessage(
+            session_id=recommendation_message.session_id,
+            report_id=report_id,
+            report_type="new_insurance",
+            json_report=json_report,
+            markdown_report=markdown,
+        )
+
+
+def _markdown_validation_report(report: dict[str, Any]) -> str:
+    lines = [
+        f"# Validation Report {report['report_id']}",
+        "",
+        f"- Workflow: {report['workflow_type']}",
+        f"- Customer type: {report['customer_type']}",
+        f"- Case type: {report['case_type']}",
+        f"- Status: {report['status']}",
+        f"- Confidence: {report['confidence']}",
+        f"- Human review required: {report['human_review_required']}",
+        f"- Next action: {report['next_action']}",
+        "",
+    ]
+    if report.get("incident_description"):
+        lines.extend(["## Incident Description", report["incident_description"], ""])
+    if report.get("llm_explanation"):
+        lines.extend(["## LLM Explanation", report["llm_explanation"], ""])
+    lines.append("## Missing Documents")
+    lines.extend([f"- {item}" for item in report["missing_documents"]] or ["- None"])
+    lines.append("")
+    lines.append("## Issues")
+    lines.extend([f"- [{item.get('severity')}] {item.get('message')}" for item in report["validation_issues"]] or ["- None"])
+    lines.append("")
+    lines.append("## Extracted Key Fields")
+    lines.extend([f"- {key}: {value}" for key, value in report["extracted_key_fields"].items()] or ["- None"])
+    return "\n".join(lines)
+
+
+def _group_extracted_fields_by_document(by_field: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for field_name, values in by_field.items():
+        for item in values:
+            document_type = item.get("document_type", "unknown")
+            grouped.setdefault(document_type, {})[field_name] = item.get("value")
+    return grouped
+
+
+def _document_debug_from_trace(trace: WorkflowTrace) -> list[dict[str, Any]]:
+    for item in reversed(trace.to_list()):
+        if item.get("agent") == "Document Intake Agent" and item.get("action") == "parsed_documents":
+            return item.get("details", {}).get("documents", [])
+    return []
+
+
+def _markdown_product_report(report: dict[str, Any]) -> str:
+    lines = [
+        f"# Product Recommendations {report['report_id']}",
+        "",
+        f"- Customer type: {report['customer_type']}",
+        f"- Category: {report['category']}",
+        "",
+    ]
+    if report.get("llm_explanation"):
+        lines.extend(["## LLM Explanation", report["llm_explanation"], ""])
+    for product in report["recommendations"]:
+        lines.extend(
+            [
+                f"## {product['scheme_name']}",
+                f"- Scheme ID: {product['scheme_id']}",
+                f"- Eligibility: {product['eligibility']}",
+                f"- Coverage: {', '.join(product['coverage_highlights'])}",
+                f"- Required documents: {', '.join(product['required_documents'])}",
+                f"- Recommended next step: {product['recommended_next_step']}",
+                "",
+            ]
+        )
+    if not report["recommendations"]:
+        lines.append("No matching schemes found.")
+    return "\n".join(lines)
+
+
+========================================================================
+FILE 13: agents/router.py
+========================================================================
+
+from __future__ import annotations
+
+from orchestrator.trace import WorkflowTrace
+from schemas.messages import UserIntentMessage
+
+
+class RouterAgent:
+    name = "Router Agent"
+
+    def route(self, message: UserIntentMessage, trace: WorkflowTrace) -> UserIntentMessage:
+        trace.add(self.name, "routed_intent", message.to_dict())
+        return message
+
+
+========================================================================
+FILE 14: agents/validation.py
+========================================================================
+
+from __future__ import annotations
+
+from datetime import datetime
+import re
+from typing import Any
+
+from orchestrator.trace import WorkflowTrace
+from rules.claim_rules import CLAIM_RULES
+from rules.kyc_rules import KYC_RULES
+from schemas.messages import ClassifiedDocumentMessage, ExtractionResultMessage, ReconciliationMessage, ValidationResultMessage
+
+
+class ValidationAgent:
+    name = "Validation Agent"
+
+    def validate(
+        self,
+        customer_type: str,
+        workflow_type: str,
+        case_type: str,
+        classified: ClassifiedDocumentMessage,
+        extraction: ExtractionResultMessage,
+        reconciliation: ReconciliationMessage,
+        trace: WorkflowTrace,
+        *,
+        user_inputs: dict[str, Any] | None = None,
+        incident_description: str | None = None,
+        llm_client: Any | None = None,
+    ) -> ValidationResultMessage:
+        rule = _select_rule(customer_type, workflow_type, case_type)
+        received_types = {doc.get("document_type") for doc in classified.documents}
+        missing_documents = [doc for doc in rule["required_documents"] if doc not in received_types]
+        issues: list[dict[str, Any]] = []
+        issues.extend(reconciliation.inconsistencies)
+
+        canonical = extraction.extracted_fields.get("canonical", {})
+        for field_name in rule.get("field_checks", []):
+            if field_name not in canonical:
+                issues.append({"severity": "low", "field": field_name, "message": f"Missing key field: {field_name}"})
+
+        _append_format_issues(canonical, issues)
+        if workflow_type == "claim_validation":
+            _append_claim_description_issues(incident_description, canonical, issues)
+        if customer_type == "individual" and workflow_type == "kyc_validation" and user_inputs:
+            _append_kyc_user_detail_issues(user_inputs, canonical, issues, llm_client)
+        status, human_review_required, next_action = _decide_status(missing_documents, issues)
+        confidence = _adjust_confidence(extraction.confidence, missing_documents, issues)
+        trace.add(self.name, "validated_case", {"status": status, "missing_documents": missing_documents, "issues": len(issues)})
+        return ValidationResultMessage(
+            session_id=classified.session_id,
+            status=status,
+            human_review_required=human_review_required,
+            confidence=confidence,
+            missing_documents=missing_documents,
+            issues=issues,
+            next_action=next_action,
+        )
+
+
+def _select_rule(customer_type: str, workflow_type: str, case_type: str) -> dict[str, Any]:
+    if workflow_type == "claim_validation":
+        return CLAIM_RULES[customer_type][case_type]
+    return KYC_RULES["business" if workflow_type == "kyb_validation" else "individual"]
+
+
+def _append_format_issues(canonical: dict[str, Any], issues: list[dict[str, Any]]) -> None:
+    pan = canonical.get("pan_number")
+    if pan and not re.fullmatch(r"[A-Z]{5}[0-9]{4}[A-Z]", pan):
+        issues.append({"severity": "medium", "field": "pan_number", "message": "PAN format is invalid"})
+    gstin = canonical.get("gstin")
+    if gstin and not re.fullmatch(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]", gstin):
+        issues.append({"severity": "medium", "field": "gstin", "message": "GSTIN format is invalid"})
+
+
+def _append_claim_description_issues(
+    incident_description: str | None,
+    canonical: dict[str, Any],
+    issues: list[dict[str, Any]],
+) -> None:
+    description = (incident_description or "").strip()
+    if not description:
+        issues.append({"severity": "medium", "field": "incident_description", "message": "Incident description is required"})
+        return
+    if len(description.split()) < 5:
+        issues.append({"severity": "low", "field": "incident_description", "message": "Incident description is too brief for claim review"})
+    incident_date = canonical.get("incident_date")
+    if incident_date and incident_date not in description:
+        issues.append(
+            {
+                "severity": "low",
+                "field": "incident_description",
+                "message": "Incident description does not mention the extracted incident date",
+            }
+        )
+
+
+def _append_kyc_user_detail_issues(
+    user_inputs: dict[str, Any],
+    canonical: dict[str, Any],
+    issues: list[dict[str, Any]],
+    llm_client: Any | None,
+) -> None:
+    verification = None
+    if llm_client is not None:
+        verification = llm_client.verify_identity_consistency(user_inputs, canonical)
+    if isinstance(verification, dict):
+        if verification.get("is_consistent") is False:
+            for issue in verification.get("issues") or ["User details are not consistent with KYC documents"]:
+                issues.append({"severity": "medium", "field": "user_details", "message": str(issue)})
+        return
+
+    comparisons = {
+        "address": "address",
+        "name": "customer_name",
+        "date_of_birth": "date_of_birth",
+        "pan_number": "pan_number",
+        "aadhaar_number": "aadhaar_number",
+        "phone_number": "phone_number",
+    }
+    for user_key, extracted_key in comparisons.items():
+        user_value = user_inputs.get(user_key)
+        extracted_value = canonical.get(extracted_key)
+        if user_value and extracted_value and not _consistent_kyc_value(user_key, user_value, extracted_value):
+            issues.append(
+                {
+                    "severity": "medium",
+                    "field": user_key,
+                    "message": f"{user_key} is not consistent with extracted KYC document details",
+                }
+            )
+
+
+def _consistent_kyc_value(field_name: str, left: Any, right: Any) -> bool:
+    if field_name == "date_of_birth":
+        left_date = _normalize_date(left)
+        right_date = _normalize_date(right)
+        if left_date and right_date:
+            return left_date == right_date
+    if field_name in {"pan_number", "aadhaar_number", "phone_number"}:
+        return _normalize_identifier(field_name, left) == _normalize_identifier(field_name, right)
+    return _consistent_text(_flatten_user_value(left), _flatten_user_value(right))
+
+
+def _normalize_date(value: Any) -> str | None:
+    text = str(value).strip()
+    for date_format in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text, date_format).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_identifier(field_name: str, value: Any) -> str:
+    text = str(value)
+    if field_name == "pan_number":
+        return re.sub(r"[^A-Z0-9]", "", text.upper())
+    return re.sub(r"\D", "", text)
+
+
+def _flatten_user_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return " ".join(str(item) for item in value.values() if item)
+    if isinstance(value, list):
+        return " ".join(str(item) for item in value if item)
+    return str(value)
+
+
+def _consistent_text(left: str, right: str) -> bool:
+    left_norm = set(_normalize_for_match(left).split())
+    right_norm = set(_normalize_for_match(right).split())
+    if not left_norm or not right_norm:
+        return False
+    overlap = left_norm & right_norm
+    return bool(overlap) and len(overlap) / min(len(left_norm), len(right_norm)) >= 0.5
+
+
+def _normalize_for_match(value: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", " ", value.lower()).strip()
+
+
+def _decide_status(missing_documents: list[str], issues: list[dict[str, Any]]) -> tuple[str, bool, str]:
+    if any(issue.get("severity") == "high" for issue in issues):
+        return "Human Review Required", True, "Escalate to a human reviewer with extracted evidence."
+    if missing_documents:
+        return "Needs Additional Documents", False, "Request the missing mandatory documents from the customer."
+    if any(issue.get("severity") == "medium" for issue in issues):
+        return "Needs Correction", False, "Ask the customer to correct inconsistent or invalid details."
+    if not issues:
+        return "Ready for Submission", False, "Submit the case to the insurer workflow."
+    return "Human Review Required", True, "Escalate because validation did not reach a deterministic pass."
+
+
+def _adjust_confidence(base: float, missing_documents: list[str], issues: list[dict[str, Any]]) -> float:
+    penalty = (len(missing_documents) * 0.08) + (len(issues) * 0.04)
+    return round(max(0.1, min(0.99, base - penalty)), 2)
+
+
+========================================================================
+FILE 15: cli/llm_chat.py
+========================================================================
+
+from __future__ import annotations
+
+from typing import Any
+
+from domain_tools import (
+    answer_capability_question,
+    get_claim_types,
+    get_insurance_categories,
+    get_supported_workflows,
+)
+from orchestrator.workflow import WorkflowOrchestrator
+from schemas.messages import DocumentPacketMessage, ProductDiscoveryMessage
+
+REQUIRED_INDIVIDUAL_USER_FIELDS = ["name", "date_of_birth", "address", "phone_number", "job", "annual_income"]
+REQUIRED_BUSINESS_USER_FIELDS = [
+    "company_name",
+    "business_type",
+    "registered_address",
+    "contact_person",
+    "contact_phone",
+    "annual_turnover",
+    "employee_count",
+]
+
+
+def run_llm_interactive(orchestrator: WorkflowOrchestrator, print_summary) -> None:
+    client = orchestrator.llm_client
+    if not client.enabled:
+        print("Interactive mode requires a vLLM/OpenAI-compatible endpoint.")
+        print("Run with --use-llm and pass --vllm-base-url plus --vllm-model.")
+        return
+
+    print("Insurance Operations Assistant")
+    print("Tell me what you need. You can mention business/individual, the workflow, details, and document paths naturally.")
+    collected: dict[str, Any] = _empty_intake()
+    transcript: list[dict[str, str]] = []
+
+    while True:
+        question = next_assistant_question(orchestrator, collected)
+        if not question:
+            report = run_ready_workflow(orchestrator, collected)
+            if report:
+                print_summary(report)
+                collected = _empty_intake()
+                transcript = []
+                print()
+                print("What would you like to process next?")
+                continue
+
+        print(f"\nAssistant: {question}")
+        user_text = input("You: ").strip()
+        result = process_user_message(orchestrator, collected, transcript, user_text)
+        if result["exit_requested"]:
+            return
+        for message in result["assistant_messages"]:
+            print(f"Assistant: {message}")
+        collected = result["collected"]
+        transcript = result["transcript"]
+        if result["report"]:
+            print_summary(result["report"])
+            collected = _empty_intake()
+            transcript = []
+            print()
+            print("What would you like to process next?")
+
+
+def next_assistant_question(orchestrator: WorkflowOrchestrator, collected: dict[str, Any]) -> str | None:
+    missing = _missing_fields(collected)
+    if not missing and collected.get("ready_to_run"):
+        return None
+    return orchestrator.llm_client.ask_intake_question(collected, missing) or _fallback_question(missing)
+
+
+def process_user_message(
+    orchestrator: WorkflowOrchestrator,
+    collected: dict[str, Any],
+    transcript: list[dict[str, str]],
+    user_text: str,
+) -> dict[str, Any]:
+    client = orchestrator.llm_client
+    if user_text.lower() in {"exit", "quit", "bye"}:
+        return {
+            "exit_requested": True,
+            "assistant_messages": [],
+            "collected": collected,
+            "transcript": transcript,
+            "report": None,
+        }
+
+    missing = _missing_fields(collected)
+    if _is_clarification_question(user_text, missing):
+        answer = _answer_clarification(client, user_text, collected, missing)
+        return {
+            "exit_requested": False,
+            "assistant_messages": [answer],
+            "collected": collected,
+            "transcript": transcript,
+            "report": None,
+        }
+
+    updated_transcript = [*transcript, {"role": "user", "content": user_text}]
+    extracted = client.extract_intake(updated_transcript, collected, _domain_context(collected))
+    if not extracted:
+        return {
+            "exit_requested": False,
+            "assistant_messages": ["I could not parse that cleanly. Please rephrase with the case type, workflow, or file paths."],
+            "collected": collected,
+            "transcript": updated_transcript,
+            "report": None,
+        }
+
+    updated_collected = _normalize_intake(_merge_intake(collected, extracted))
+    report = run_ready_workflow(orchestrator, updated_collected)
+    return {
+        "exit_requested": False,
+        "assistant_messages": [],
+        "collected": updated_collected,
+        "transcript": updated_transcript,
+        "report": report,
+    }
+
+
+def run_ready_workflow(orchestrator: WorkflowOrchestrator, collected: dict[str, Any]):
+    missing = _missing_fields(collected)
+    if missing or not collected.get("ready_to_run"):
+        return None
+    return _run_collected_workflow(orchestrator, collected)
+
+
+def _empty_intake() -> dict[str, Any]:
+    return {
+        "customer_type": None,
+        "workflow_type": None,
+        "insurance_category": None,
+        "case_type": None,
+        "file_paths": [],
+        "user_inputs": {},
+        "incident_description": None,
+        "ready_to_run": False,
+    }
+
+
+def _missing_fields(collected: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    if not collected.get("customer_type"):
+        missing.append("customer_type")
+    if not collected.get("workflow_type"):
+        missing.append("workflow_type")
+    workflow = collected.get("workflow_type")
+    if (
+        collected.get("customer_type") == "individual"
+        and workflow in {"new_insurance", "claim_validation", "kyc_validation"}
+        and not _has_required_individual_user_details(collected.get("user_inputs", {}))
+    ):
+        missing.append("user details")
+        return missing
+    if (
+        collected.get("customer_type") == "business"
+        and workflow in {"new_insurance", "claim_validation", "kyb_validation"}
+        and not _has_required_business_user_details(collected.get("user_inputs", {}))
+    ):
+        missing.append("business details")
+        return missing
+    if workflow == "new_insurance":
+        if not collected.get("insurance_category"):
+            missing.append("insurance_category")
+    elif workflow in {"claim_validation", "kyc_validation", "kyb_validation"}:
+        if workflow == "claim_validation" and not collected.get("case_type"):
+            missing.append("claim_type")
+        if workflow == "claim_validation" and not collected.get("incident_description"):
+            missing.append("incident description")
+        if not collected.get("file_paths"):
+            missing.append("document file paths")
+    return missing
+
+
+def _has_required_individual_user_details(user_inputs: dict[str, Any]) -> bool:
+    return all(str(user_inputs.get(field) or "").strip() for field in REQUIRED_INDIVIDUAL_USER_FIELDS)
+
+
+def _has_required_business_user_details(user_inputs: dict[str, Any]) -> bool:
+    return all(str(user_inputs.get(field) or "").strip() for field in REQUIRED_BUSINESS_USER_FIELDS)
+
+
+def _merge_intake(current: dict[str, Any], extracted: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(current)
+    for key in ["customer_type", "workflow_type", "insurance_category", "case_type"]:
+        if extracted.get(key):
+            merged[key] = extracted[key]
+    if extracted.get("file_paths"):
+        merged["file_paths"] = extracted["file_paths"]
+    if extracted.get("incident_description"):
+        merged["incident_description"] = extracted["incident_description"]
+    if isinstance(extracted.get("user_inputs"), dict):
+        merged["user_inputs"] = {**merged.get("user_inputs", {}), **extracted["user_inputs"]}
+    if extracted.get("ready_to_run"):
+        merged["ready_to_run"] = True
+    return merged
+
+
+def _normalize_intake(collected: dict[str, Any]) -> dict[str, Any]:
+    if collected.get("customer_type") == "business" and collected.get("workflow_type") == "kyc_validation":
+        collected["workflow_type"] = "kyb_validation"
+    if collected.get("customer_type") == "individual" and collected.get("workflow_type") == "kyb_validation":
+        collected["workflow_type"] = "kyc_validation"
+    if collected.get("workflow_type") in {"kyc_validation", "kyb_validation"}:
+        collected["case_type"] = "kyc" if collected["workflow_type"] == "kyc_validation" else "kyb"
+    if collected.get("file_paths"):
+        collected["ready_to_run"] = True
+    if collected.get("workflow_type") == "new_insurance" and collected.get("insurance_category"):
+        collected["ready_to_run"] = True
+    return collected
+
+
+def _run_collected_workflow(orchestrator: WorkflowOrchestrator, collected: dict[str, Any]):
+    if collected["workflow_type"] == "new_insurance":
+        return orchestrator.run_product_discovery(
+            ProductDiscoveryMessage(
+                session_id=orchestrator.new_session_id(),
+                customer_type=collected["customer_type"],
+                insurance_category=collected["insurance_category"],
+                user_inputs=collected["user_inputs"],
+            )
+        )
+    return orchestrator.run_document_validation(
+        DocumentPacketMessage(
+            session_id=orchestrator.new_session_id(),
+            customer_type=collected["customer_type"],
+            workflow_type=collected["workflow_type"],
+            case_type=collected["case_type"],
+            file_paths=collected["file_paths"],
+            user_inputs=collected.get("user_inputs", {}),
+            incident_description=collected.get("incident_description"),
+        )
+    )
+
+
+def _fallback_question(missing: list[str]) -> str:
+    if not missing:
+        return "Say run when you want me to process this."
+    return f"Please share the {missing[0].replace('_', ' ')}."
+
+
+def _is_clarification_question(user_text: str, missing: list[str]) -> bool:
+    normalized = user_text.lower().strip()
+    if "?" in normalized:
+        return True
+    if any(word in normalized.split() for word in ["options", "option", "help"]):
+        return bool(missing)
+    clarification_phrases = [
+        "what options",
+        "what can you",
+        "what do you",
+        "help",
+        "examples",
+        "show options",
+        "list options",
+        "available options",
+        "which options",
+        "what workflows",
+        "what categories",
+        "what documents",
+    ]
+    return any(phrase in normalized for phrase in clarification_phrases) and bool(missing)
+
+
+def _answer_clarification(client, user_text: str, collected: dict[str, Any], missing: list[str]) -> str:
+    tool_result = answer_capability_question(user_text, collected, missing)
+    return client.answer_with_tool_result(user_text, collected, missing, tool_result) or _format_tool_result(tool_result, missing)
+
+
+def _domain_context(collected: dict[str, Any]) -> dict[str, Any]:
+    customer_type = collected.get("customer_type")
+    return {
+        "supported_workflows": get_supported_workflows(customer_type),
+        "insurance_categories": get_insurance_categories(customer_type),
+        "claim_types": get_claim_types(customer_type),
+    }
+
+
+def _format_tool_result(tool_result: dict[str, Any], missing: list[str]) -> str:
+    tool_name = tool_result.get("tool")
+    if tool_name == "get_supported_workflows":
+        labels = [item["label"] for item in tool_result["workflows"]]
+        return f"I can help you {', '.join(labels)}. Which one would you like to do?"
+    if tool_name == "get_insurance_categories":
+        categories = tool_result["categories"]
+        if isinstance(categories, dict):
+            business = ", ".join(_display_label(item) for item in categories["business"])
+            individual = ", ".join(_display_label(item) for item in categories["individual"])
+            return f"Business categories: {business}. Individual categories: {individual}. Which category should I use?"
+        return f"I can search these insurance categories: {', '.join(_display_label(item) for item in categories)}. Which category should I use?"
+    if tool_name == "get_claim_types":
+        claim_types = tool_result["claim_types"]
+        if isinstance(claim_types, dict):
+            business = ", ".join(_display_label(item) for item in claim_types["business"])
+            individual = ", ".join(_display_label(item) for item in claim_types["individual"])
+            return f"Business claim types: {business}. Individual claim types: {individual}. Which claim type is this?"
+        return f"I can validate these claim types: {', '.join(_display_label(item) for item in claim_types)}. Which claim type is this?"
+    if tool_name == "get_required_documents":
+        documents = tool_result["required_documents"]
+        if documents:
+            return f"I need these documents: {', '.join(documents)}. Please provide the file paths."
+        return "Please provide the document file paths you want me to validate."
+    return _fallback_question(missing)
+
+
+def _display_label(value: str) -> str:
+    return value.replace("_", " ")
+
+
+========================================================================
+FILE 16: db/database.py
+========================================================================
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+DB_PATH = Path("outputs/insurance_assistant.sqlite3")
+
+
+class DatabaseAgent:
+    name = "Database Agent"
+
+    def __init__(self, db_path: Path | str = DB_PATH):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init()
+
+    def _connect(self):
+        return sqlite3.connect(self.db_path)
+
+    def _init(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS product_recommendations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id TEXT,
+                    session_id TEXT,
+                    customer_type TEXT,
+                    category TEXT,
+                    payload_json TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS validation_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id TEXT,
+                    session_id TEXT,
+                    workflow_type TEXT,
+                    customer_type TEXT,
+                    case_type TEXT,
+                    status TEXT,
+                    payload_json TEXT,
+                    markdown_report TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+    def save_report(self, session_id: str, report) -> None:
+        payload: dict[str, Any] = report.json_report
+        with self._connect() as conn:
+            if report.report_type == "new_insurance":
+                conn.execute(
+                    """
+                    INSERT INTO product_recommendations
+                    (report_id, session_id, customer_type, category, payload_json)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        report.report_id,
+                        session_id,
+                        payload.get("customer_type"),
+                        payload.get("category"),
+                        json.dumps(payload, indent=2),
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO validation_reports
+                    (report_id, session_id, workflow_type, customer_type, case_type, status, payload_json, markdown_report)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        report.report_id,
+                        session_id,
+                        payload.get("workflow_type"),
+                        payload.get("customer_type"),
+                        payload.get("case_type"),
+                        payload.get("status"),
+                        json.dumps(payload, indent=2),
+                        report.markdown_report,
+                    ),
+                )
+
+
+========================================================================
+FILE 17: document_processing/classifier.py
+========================================================================
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+DOCUMENT_HINTS = {
+    "claim_form": ["claim form", "claim amount", "incident date"],
+    "policy_copy": ["policy number", "sum insured", "policy copy"],
+    "incident_report": ["incident report", "damage description"],
+    "repair_estimate": ["repair estimate", "estimated repair"],
+    "hospital_bill": ["hospital bill", "invoice", "total bill"],
+    "discharge_summary": ["discharge summary", "admission date", "discharge date"],
+    "death_certificate": ["death certificate", "date of death"],
+    "employee_id_proof": ["employee id", "employee code"],
+    "nominee_id_proof": ["nominee", "identity proof"],
+    "legal_notice": ["legal notice", "plaintiff", "notice"],
+    "client_contract": ["client contract", "agreement"],
+    "incident_summary": ["incident summary", "professional service"],
+    "registration_certificate": ["registration certificate", "vehicle number"],
+    "driving_license": ["driving license", "license number"],
+    "ticket_or_itinerary": ["ticket", "itinerary", "pnr"],
+    "expense_receipts": ["receipt", "expense"],
+    "medical_report": ["medical report", "diagnosis"],
+    "identity_proof": ["aadhaar", "passport", "identity proof", "date of birth"],
+    "pan": ["permanent account number", "pan number"],
+    "address_proof": ["address proof", "residential address"],
+    "bank_proof": ["bank account", "ifsc", "account holder"],
+    "certificate_of_incorporation": ["certificate of incorporation", "cin"],
+    "company_pan": ["company pan", "permanent account number"],
+    "gst_certificate": ["gstin", "gst certificate"],
+    "registered_address_proof": ["registered address proof", "registered address"],
+    "board_resolution": ["board resolution", "authorized signatory"],
+    "authorized_signatory_id_proof": ["authorized signatory", "identity proof"],
+    "authorized_signatory_address_proof": ["authorized signatory", "address proof"],
+    "beneficial_ownership_declaration": ["beneficial ownership", "beneficial owner"],
+    "bank_account_proof": ["bank account", "account holder", "current account"],
+}
+
+
+def classify_document(document: dict[str, Any]) -> dict[str, Any]:
+    if document.get("extraction_method") == "vision_llm" and document.get("document_type") != "unknown":
+        document["confidence"] = max(float(document.get("confidence", 0.5)), 0.88)
+        return document
+    text = document.get("extracted_text", "").lower()
+    file_name = document.get("file_name", "").lower().replace("-", "_").replace(" ", "_")
+    file_stem = file_name.rsplit(".", 1)[0]
+    scores: dict[str, int] = {}
+    for doc_type, hints in DOCUMENT_HINTS.items():
+        score = sum(1 for hint in hints if hint in text or hint.replace(" ", "_") in file_name)
+        if doc_type == file_stem:
+            score += 10
+        if doc_type in file_name:
+            score += 3
+        if score:
+            scores[doc_type] = score
+    if scores:
+        document["document_type"] = max(scores, key=scores.get)
+        document["confidence"] = max(float(document.get("confidence", 0.5)), min(0.99, 0.55 + (max(scores.values()) * 0.1)))
+    else:
+        _classify_from_extracted_clues(document)
+    return document
+
+
+def _classify_from_extracted_clues(document: dict[str, Any]) -> None:
+    text = document.get("extracted_text", "")
+    fields = document.get("vision_extracted_fields") or {}
+    field_names = set(fields) if isinstance(fields, dict) else set()
+    if "pan_number" in field_names or re.search(r"\b[A-Z]{5}\s*[0-9]{4}\s*[A-Z]\b", text):
+        document["document_type"] = "pan"
+        document["confidence"] = max(float(document.get("confidence", 0.5)), 0.82)
+        return
+    if "aadhaar_number" in field_names or re.search(r"\b[0-9]{4}\s*[0-9]{4}\s*[0-9]{4}\b", text):
+        document["document_type"] = "identity_proof"
+        document["confidence"] = max(float(document.get("confidence", 0.5)), 0.82)
+
+
+========================================================================
+FILE 18: document_processing/extraction.py
+========================================================================
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+FIELD_PATTERNS = {
+    "policy_number": r"(?:policy number|policy no)\s*[:\-]\s*([A-Z0-9\-\/]+)",
+    "claim_amount": r"(?:claim amount|total bill|estimated repair|amount)\s*[:\-]\s*(?:INR|Rs\.?)?\s*([0-9,]+)",
+    "incident_date": r"(?:incident date|loss date)\s*[:\-]\s*([0-9]{2}[\/\-][0-9]{2}[\/\-][0-9]{4})",
+    "customer_name": r"(?:customer name|name)\s*[:\-]\s*([A-Za-z .]+)",
+    "patient_name": r"(?:patient name|customer name|name)\s*[:\-]\s*([A-Za-z .]+)",
+    "insured_name": r"(?:insured name|customer name|name)\s*[:\-]\s*([A-Za-z .]+)",
+    "employee_name": r"(?:employee name|name)\s*[:\-]\s*([A-Za-z .]+)",
+    "company_name": r"(?:company name|account holder|insured company)\s*[:\-]\s*([A-Za-z0-9 &.,]+)",
+    "pan_number": r"(?:pan number|pan)\s*[:\-]\s*([A-Z]{5}[0-9]{4}[A-Z])",
+    "aadhaar_number": r"(?:aadhaar number|aadhar number|aadhaar|aadhar)\s*[:\-]\s*([0-9]{4}\s?[0-9]{4}\s?[0-9]{4})",
+    "phone_number": r"(?:phone number|mobile number|phone|mobile)\s*[:\-]\s*(\+?[0-9][0-9 \-]{8,18})",
+    "gstin": r"(?:gstin|gst number)\s*[:\-]\s*([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])",
+    "registered_address": r"(?:registered address|address)\s*[:\-]\s*([A-Za-z0-9 ,.\-/]+)",
+    "address": r"(?:residential address|address)\s*[:\-]\s*([A-Za-z0-9 ,.\-/]+)",
+    "date_of_birth": r"(?:date of birth|dob)\s*[:\-]\s*([0-9]{2}[\/\-][0-9]{2}[\/\-][0-9]{4})",
+    "date_of_death": r"(?:date of death)\s*[:\-]\s*([0-9]{2}[\/\-][0-9]{2}[\/\-][0-9]{4})",
+    "authorized_signatory": r"(?:authorized signatory|authorised signatory)\s*[:\-]\s*([A-Za-z .]+)",
+    "bank_account_holder": r"(?:account holder|bank account holder)\s*[:\-]\s*([A-Za-z0-9 &.,]+)",
+    "vehicle_number": r"(?:vehicle number|registration number)\s*[:\-]\s*([A-Z0-9\-]+)",
+    "travel_date": r"(?:travel date|departure date)\s*[:\-]\s*([0-9]{2}[\/\-][0-9]{2}[\/\-][0-9]{4})",
+}
+
+VISION_FIELD_NAMES = set(FIELD_PATTERNS)
+
+FALLBACK_FIELD_PATTERNS = {
+    "pan_number": [
+        r"\b([A-Z]{5}\s*[0-9]{4}\s*[A-Z])\b",
+    ],
+    "aadhaar_number": [
+        r"\b([0-9]{4}[ \t]+[0-9]{4}[ \t]+[0-9]{4})\b",
+        r"\b([0-9]{12})\b",
+    ],
+    "phone_number": [
+        r"(?:phone number|mobile number|phone|mobile)\s*[:\-]?\s*(?:\+91[\s-]?)?([6-9][0-9][0-9\s-]{8,14})\b",
+    ],
+    "date_of_birth": [
+        r"(?:date of birth|dob|birth)\s*[:\-]?\s*([0-9]{2}[\/\-][0-9]{2}[\/\-][0-9]{4})",
+        r"(?:date of birth|dob|birth)\s*[:\-]?\s*([0-9]{4}[\/\-][0-9]{2}[\/\-][0-9]{2})",
+    ],
+    "customer_name": [
+        r"(?:customer name|name)\s*[:\-]?\s*([A-Za-z][A-Za-z .]{2,80})",
+    ],
+    "address": [
+        r"(?:residential address|address)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9 ,.\-/\n]{5,180})",
+    ],
+}
+
+
+def extract_fields(documents: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], float]:
+    extracted: dict[str, list[dict[str, str]]] = {}
+    evidence: dict[str, list[dict[str, str]]] = {}
+    confidences: list[float] = []
+    for document in documents:
+        text = document.get("extracted_text", "")
+        doc_type = document.get("document_type", "unknown")
+        confidences.append(float(document.get("confidence", 0.4)))
+        for field_name, value in _structured_fields(document).items():
+            _add_field(extracted, evidence, field_name, value, doc_type, "vision_extracted_fields")
+        for field_name, pattern in FIELD_PATTERNS.items():
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            value = _clean(match.group(1))
+            _add_field(extracted, evidence, field_name, value, doc_type, match.group(0)[:160])
+        for field_name, patterns in FALLBACK_FIELD_PATTERNS.items():
+            if field_name in extracted:
+                continue
+            for pattern in patterns:
+                match = re.search(pattern, text, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                value = _clean_value(field_name, match.group(1))
+                if value:
+                    _add_field(extracted, evidence, field_name, value, doc_type, match.group(0)[:160])
+                    break
+
+    canonical = {
+        field_name: values[0]["value"]
+        for field_name, values in extracted.items()
+        if values
+    }
+    confidence = sum(confidences) / len(confidences) if confidences else 0.0
+    return {"canonical": canonical, "by_field": extracted}, evidence, round(confidence, 2)
+
+
+def _clean(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip(" .,\n\t")
+
+
+def _structured_fields(document: dict[str, Any]) -> dict[str, str]:
+    fields = document.get("vision_extracted_fields") or {}
+    if not isinstance(fields, dict):
+        return {}
+    cleaned: dict[str, str] = {}
+    for field_name, value in fields.items():
+        if field_name not in VISION_FIELD_NAMES:
+            continue
+        normalized_value = _normalize_structured_value(value)
+        if normalized_value in {None, ""}:
+            continue
+        cleaned_value = _clean_value(field_name, str(normalized_value))
+        if cleaned_value:
+            cleaned[field_name] = cleaned_value
+    return cleaned
+
+
+def _normalize_structured_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in ("value", "text", "number", "raw", "normalized"):
+            nested_value = value.get(key)
+            if _present_structured_value(nested_value):
+                return nested_value
+        return next((nested_value for nested_value in value.values() if _present_structured_value(nested_value)), None)
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value if _present_structured_value(item))
+    return value
+
+
+def _present_structured_value(value: Any) -> bool:
+    return value is not None and value != ""
+
+
+def _clean_value(field_name: str, value: str) -> str:
+    cleaned = _clean(value)
+    if field_name == "pan_number":
+        return re.sub(r"[^A-Z0-9]", "", cleaned.upper())
+    if field_name in {"aadhaar_number", "phone_number"}:
+        digits = re.sub(r"\D", "", cleaned)
+        if field_name == "aadhaar_number" and len(digits) == 12:
+            return f"{digits[:4]} {digits[4:8]} {digits[8:]}"
+        if field_name == "phone_number" and len(digits) >= 10:
+            return digits[-10:]
+    return cleaned
+
+
+def _add_field(
+    extracted: dict[str, list[dict[str, str]]],
+    evidence: dict[str, list[dict[str, str]]],
+    field_name: str,
+    value: str,
+    document_type: str,
+    snippet: str,
+) -> None:
+    if any(item["value"] == value and item["document_type"] == document_type for item in extracted.get(field_name, [])):
+        return
+    extracted.setdefault(field_name, []).append({"value": value, "document_type": document_type})
+    evidence.setdefault(field_name, []).append({"document_type": document_type, "snippet": snippet})
+
+
+========================================================================
+FILE 19: document_processing/intake.py
+========================================================================
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+
+VisionExtractor = Callable[[Path], dict[str, Any] | None]
+
+
+def parse_document(
+    path_text: str,
+    vision_extractor: VisionExtractor | None = None,
+    *,
+    prefer_vision: bool = False,
+) -> dict[str, Any]:
+    path = Path(path_text).expanduser()
+    result: dict[str, Any] = {
+        "file_name": path.name,
+        "file_path": str(path),
+        "extracted_text": "",
+        "extraction_method": "unread",
+        "ocr_used": False,
+        "document_type": "unknown",
+        "confidence": 0.0,
+        "exists": path.exists(),
+        "debug": {
+            "file_size_bytes": path.stat().st_size if path.exists() else 0,
+            "suffix": path.suffix.lower(),
+            "text_length": 0,
+            "text_preview": "",
+            "warnings": [],
+        },
+    }
+    if not path.exists():
+        result["extraction_method"] = "missing_file"
+        return result
+
+    suffix = path.suffix.lower()
+    if suffix == ".txt":
+        result["extracted_text"] = path.read_text(encoding="utf-8", errors="ignore")
+        result["extraction_method"] = "text"
+        result["confidence"] = 0.95
+    elif suffix == ".pdf":
+        if prefer_vision and _apply_vision_extraction(result, path, vision_extractor, preferred=True):
+            _finalize_debug(result)
+            return result
+        text = _extract_pdf_text(path)
+        result["extracted_text"] = text
+        result["ocr_used"] = not bool(text.strip())
+        result["extraction_method"] = "pdf_text" if text.strip() else "pdf_ocr_unavailable"
+        result["confidence"] = 0.85 if text.strip() else 0.25
+        if _needs_vision_fallback(result):
+            _apply_vision_extraction(result, path, vision_extractor)
+    elif suffix in {".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"}:
+        if prefer_vision and _apply_vision_extraction(result, path, vision_extractor, preferred=True):
+            _finalize_debug(result)
+            return result
+        text, ocr_debug = _ocr_image(path)
+        result["debug"]["ocr"] = ocr_debug
+        result["extracted_text"] = text
+        result["ocr_used"] = True
+        result["extraction_method"] = "image_ocr" if text.strip() else "image_ocr_unavailable"
+        result["confidence"] = 0.75 if text.strip() else 0.25
+        if _needs_vision_fallback(result):
+            _apply_vision_extraction(result, path, vision_extractor)
+    else:
+        result["extracted_text"] = path.read_text(encoding="utf-8", errors="ignore")
+        result["extraction_method"] = "generic_text"
+        result["confidence"] = 0.65
+
+    _finalize_debug(result)
+    return result
+
+
+def _needs_vision_fallback(result: dict[str, Any]) -> bool:
+    text = result.get("extracted_text", "").strip()
+    if not text:
+        return True
+    useful_tokens = ["pan", "aadhaar", "aadhar", "date of birth", "dob", "address", "policy number"]
+    return len(text) < 40 or not any(token in text.lower() for token in useful_tokens)
+
+
+def _apply_vision_extraction(
+    result: dict[str, Any],
+    path: Path,
+    vision_extractor: VisionExtractor | None,
+    *,
+    preferred: bool = False,
+) -> bool:
+    attempt_label = "Vision parsing" if preferred else "Vision fallback"
+    if vision_extractor is None:
+        result["vision_fallback_attempted"] = False
+        result["debug"]["vision_fallback_attempted"] = False
+        result["debug"]["warnings"].append(f"{attempt_label} unavailable because no multimodal LLM extractor is configured.")
+        return False
+    result["vision_fallback_attempted"] = True
+    result["debug"]["vision_fallback_attempted"] = True
+    result["debug"]["vision_preferred"] = preferred
+    started = time.perf_counter()
+    parsed = vision_extractor(path)
+    result["debug"]["vision_latency_ms"] = round((time.perf_counter() - started) * 1000)
+    if not parsed or not _has_useful_vision_payload(parsed):
+        result["vision_fallback_succeeded"] = False
+        result["debug"]["vision_fallback_succeeded"] = False
+        result["debug"]["warnings"].append(f"{attempt_label} did not return structured fields.")
+        return False
+    result["vision_fallback_succeeded"] = True
+    result["debug"]["vision_fallback_succeeded"] = True
+    result["vision_extracted_fields"] = _normalize_vision_fields(parsed.get("fields") or {})
+    if parsed.get("document_type"):
+        result["document_type"] = parsed["document_type"]
+    result["extracted_text"] = _vision_payload_to_text(parsed)
+    result["extraction_method"] = "vision_llm"
+    result["confidence"] = 0.88
+    return True
+
+
+def _has_useful_vision_payload(parsed: dict[str, Any]) -> bool:
+    fields = parsed.get("fields")
+    if isinstance(fields, dict) and any(_has_present_value(value) for value in fields.values()):
+        return True
+    return parsed.get("document_type") not in {None, "", "unknown"}
+
+
+def _has_present_value(value: Any) -> bool:
+    if value is None or value == "":
+        return False
+    if isinstance(value, dict):
+        return any(_has_present_value(nested_value) for nested_value in value.values())
+    if isinstance(value, list):
+        return any(_has_present_value(item) for item in value)
+    return True
+
+
+def _normalize_vision_fields(fields: Any) -> dict[str, Any]:
+    if not isinstance(fields, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for key, value in fields.items():
+        normalized[key] = _normalize_vision_value(value)
+    return normalized
+
+
+def _normalize_vision_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in ("value", "text", "number", "raw", "normalized"):
+            nested_value = value.get(key)
+            if _has_present_value(nested_value):
+                return nested_value
+        return next((nested_value for nested_value in value.values() if _has_present_value(nested_value)), None)
+    if isinstance(value, list):
+        present = [_normalize_vision_value(item) for item in value if _has_present_value(item)]
+        return ", ".join(str(item) for item in present if _has_present_value(item))
+    return value
+
+
+def _vision_payload_to_text(parsed: dict[str, Any]) -> str:
+    lines = []
+    document_type = parsed.get("document_type")
+    if document_type:
+        lines.append(f"Document Type: {document_type}")
+    fields = parsed.get("fields") or {}
+    labels = {
+        "customer_name": "Customer Name",
+        "date_of_birth": "Date of Birth",
+        "pan_number": "PAN Number",
+        "aadhaar_number": "Aadhaar Number",
+        "address": "Address",
+        "phone_number": "Phone Number",
+        "policy_number": "Policy Number",
+        "patient_name": "Patient Name",
+        "insured_name": "Insured Name",
+        "claim_amount": "Claim Amount",
+        "incident_date": "Incident Date",
+    }
+    for key, label in labels.items():
+        value = fields.get(key)
+        if value:
+            lines.append(f"{label}: {value}")
+    if parsed.get("summary"):
+        lines.append(f"Summary: {parsed['summary']}")
+    return "\n".join(lines)
+
+
+def _extract_pdf_text(path: Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except ModuleNotFoundError:
+        return ""
+    reader = PdfReader(str(path))
+    return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+
+def _ocr_image(path: Path) -> tuple[str, dict[str, Any]]:
+    diagnostics: dict[str, Any] = {
+        "tesseract_path": shutil.which("tesseract"),
+        "attempts": [],
+        "preprocessing_available": False,
+        "best_attempt": None,
+    }
+    if not diagnostics["tesseract_path"]:
+        diagnostics["warnings"] = ["Tesseract is not installed or not on PATH."]
+        return "", diagnostics
+
+    candidates = [(path, "original")]
+    preprocessed_path = _preprocess_image_for_ocr(path, diagnostics)
+    if preprocessed_path:
+        candidates.append((preprocessed_path, "preprocessed"))
+
+    best_text = ""
+    best_attempt: dict[str, Any] | None = None
+    try:
+        for candidate_path, candidate_label in candidates:
+            for psm in ["6", "11", "4", "3"]:
+                attempt = _run_tesseract(candidate_path, candidate_label, psm)
+                diagnostics["attempts"].append(attempt)
+                text = attempt.get("text", "")
+                if len(text.strip()) > len(best_text.strip()):
+                    best_text = text
+                    best_attempt = {
+                        "source": candidate_label,
+                        "psm": psm,
+                        "returncode": attempt.get("returncode"),
+                        "text_length": len(text.strip()),
+                    }
+    finally:
+        if preprocessed_path and preprocessed_path != path:
+            try:
+                os.unlink(preprocessed_path)
+            except OSError:
+                pass
+
+    diagnostics["best_attempt"] = best_attempt
+    return best_text, diagnostics
+
+
+def _run_tesseract(path: Path, source: str, psm: str) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            ["tesseract", str(path), "stdout", "--psm", psm],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except FileNotFoundError:
+        return {
+            "source": source,
+            "psm": psm,
+            "returncode": None,
+            "text": "",
+            "text_length": 0,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "error": "tesseract_not_found",
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "source": source,
+            "psm": psm,
+            "returncode": None,
+            "text": "",
+            "text_length": 0,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "error": "timeout",
+        }
+    except subprocess.SubprocessError as exc:
+        return {
+            "source": source,
+            "psm": psm,
+            "returncode": None,
+            "text": "",
+            "text_length": 0,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "error": str(exc),
+        }
+    text = completed.stdout if completed.returncode == 0 else ""
+    return {
+        "source": source,
+        "psm": psm,
+        "returncode": completed.returncode,
+        "text": text,
+        "text_length": len(text.strip()),
+        "latency_ms": round((time.perf_counter() - started) * 1000),
+        "stderr": completed.stderr.strip()[:300],
+    }
+
+
+def _preprocess_image_for_ocr(path: Path, diagnostics: dict[str, Any]) -> Path | None:
+    try:
+        from PIL import Image, ImageEnhance, ImageOps
+    except ModuleNotFoundError:
+        diagnostics["warnings"] = ["Pillow is not installed, so image preprocessing was skipped."]
+        return None
+
+    diagnostics["preprocessing_available"] = True
+    try:
+        with Image.open(path) as image:
+            image = ImageOps.exif_transpose(image)
+            image = ImageOps.grayscale(image)
+            image = ImageOps.autocontrast(image)
+            image = ImageEnhance.Contrast(image).enhance(1.8)
+            width, height = image.size
+            if max(width, height) < 1600:
+                image = image.resize((width * 2, height * 2))
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as handle:
+                temp_path = Path(handle.name)
+            image.save(temp_path)
+            diagnostics["preprocessed_size"] = image.size
+            return temp_path
+    except Exception as exc:
+        diagnostics.setdefault("warnings", []).append(f"Image preprocessing failed: {exc}")
+        return None
+
+
+def _finalize_debug(result: dict[str, Any]) -> None:
+    text = result.get("extracted_text", "")
+    debug = result.setdefault("debug", {})
+    debug["text_length"] = len(text.strip())
+    debug["text_preview"] = " ".join(text.split())[:240]
+    debug["extraction_method"] = result.get("extraction_method")
+    debug["confidence"] = result.get("confidence")
+    if result.get("document_type") != "unknown":
+        debug["document_type"] = result.get("document_type")
+
+
+========================================================================
+FILE 20: domain_tools/__init__.py
+========================================================================
+
+from domain_tools.insurance_domain import (
+    answer_capability_question,
+    get_claim_types,
+    get_insurance_categories,
+    get_product_catalog_options,
+    get_required_documents,
+    get_supported_workflows,
+)
+
+__all__ = [
+    "answer_capability_question",
+    "get_claim_types",
+    "get_insurance_categories",
+    "get_product_catalog_options",
+    "get_required_documents",
+    "get_supported_workflows",
+]
+
+
+========================================================================
+FILE 21: domain_tools/insurance_domain.py
+========================================================================
+
+from __future__ import annotations
+
+from typing import Any
+
+from mcp_server.client import get_business_insurance_schemes, get_individual_insurance_schemes
+from rules.claim_rules import CLAIM_RULES
+from rules.kyc_rules import KYC_RULES
+
+WORKFLOWS = [
+    {
+        "workflow_type": "new_insurance",
+        "label": "find new insurance",
+        "description": "Search the product catalogue and recommend matching insurance schemes.",
+    },
+    {
+        "workflow_type": "claim_validation",
+        "label": "validate claim documents",
+        "description": "Parse uploaded documents, classify them, extract fields, and validate claim requirements.",
+    },
+    {
+        "workflow_type": "kyc_validation",
+        "label": "complete KYC validation",
+        "description": "Validate individual identity, address, PAN, and bank proof documents.",
+        "customer_type": "individual",
+    },
+    {
+        "workflow_type": "kyb_validation",
+        "label": "complete KYB validation",
+        "description": "Validate business registration, tax, signatory, ownership, address, and bank documents.",
+        "customer_type": "business",
+    },
+]
+
+
+def get_supported_workflows(customer_type: str | None = None) -> dict[str, Any]:
+    workflows = [
+        workflow
+        for workflow in WORKFLOWS
+        if workflow.get("customer_type") in {None, customer_type}
+    ]
+    return {"tool": "get_supported_workflows", "customer_type": customer_type, "workflows": workflows}
+
+
+def get_insurance_categories(customer_type: str | None) -> dict[str, Any]:
+    if customer_type == "business":
+        categories = _catalog_categories("business")
+    elif customer_type == "individual":
+        categories = _catalog_categories("individual")
+    else:
+        categories = {"business": _catalog_categories("business"), "individual": _catalog_categories("individual")}
+    return {"tool": "get_insurance_categories", "customer_type": customer_type, "categories": categories}
+
+
+def get_claim_types(customer_type: str | None) -> dict[str, Any]:
+    if customer_type in CLAIM_RULES:
+        claim_types: Any = sorted(CLAIM_RULES[customer_type].keys())
+    else:
+        claim_types = {key: sorted(value.keys()) for key, value in CLAIM_RULES.items()}
+    return {"tool": "get_claim_types", "customer_type": customer_type, "claim_types": claim_types}
+
+
+def get_required_documents(customer_type: str | None, workflow_type: str | None, case_type: str | None = None) -> dict[str, Any]:
+    if workflow_type == "claim_validation" and customer_type in CLAIM_RULES and case_type in CLAIM_RULES[customer_type]:
+        required = CLAIM_RULES[customer_type][case_type]["required_documents"]
+    elif workflow_type == "kyc_validation":
+        required = KYC_RULES["individual"]["required_documents"]
+    elif workflow_type == "kyb_validation":
+        required = KYC_RULES["business"]["required_documents"]
+    else:
+        required = []
+    return {
+        "tool": "get_required_documents",
+        "customer_type": customer_type,
+        "workflow_type": workflow_type,
+        "case_type": case_type,
+        "required_documents": required,
+        "supported_file_inputs": ["txt", "pdf", "png", "jpg", "jpeg", "tiff", "bmp", "webp"],
+    }
+
+
+def get_product_catalog_options(customer_type: str | None, category: str | None = None) -> dict[str, Any]:
+    if customer_type == "business":
+        schemes = get_business_insurance_schemes(category or "", {})
+    elif customer_type == "individual":
+        schemes = get_individual_insurance_schemes(category or "", {})
+    else:
+        schemes = []
+    return {
+        "tool": "get_product_catalog_options",
+        "customer_type": customer_type,
+        "category": category,
+        "schemes": schemes,
+    }
+
+
+def answer_capability_question(user_text: str, collected: dict[str, Any], missing: list[str]) -> dict[str, Any]:
+    normalized = user_text.lower()
+    customer_type = collected.get("customer_type")
+    workflow_type = collected.get("workflow_type")
+    case_type = collected.get("case_type")
+
+    if "document" in normalized or "file" in normalized:
+        return get_required_documents(customer_type, workflow_type, case_type)
+    if "claim" in normalized and (workflow_type == "claim_validation" or "claim_type" in missing):
+        return get_claim_types(customer_type)
+    if "categor" in normalized or workflow_type == "new_insurance" and any(item in missing for item in ["insurance_category", "basic customer or business details"]):
+        return get_insurance_categories(customer_type)
+    if "option" in normalized or "workflow" in normalized or "what can" in normalized or "help" in normalized:
+        if not workflow_type or "workflow_type" in missing:
+            return get_supported_workflows(customer_type)
+        if workflow_type == "new_insurance":
+            return get_insurance_categories(customer_type)
+        if workflow_type == "claim_validation":
+            return get_claim_types(customer_type)
+        return get_required_documents(customer_type, workflow_type, case_type)
+    return get_supported_workflows(customer_type)
+
+
+def _catalog_categories(customer_type: str) -> list[str]:
+    getter = get_business_insurance_schemes if customer_type == "business" else get_individual_insurance_schemes
+    categories = []
+    # The catalogue client filters by category, so derive supported categories
+    # from known product data through the catalogue file used by that client.
+    from mcp_server.client import _load_catalog
+
+    for product in _load_catalog():
+        if product["customer_type"] == customer_type:
+            categories.append(product["category"])
+    return sorted(set(categories))
+
+
+========================================================================
+FILE 22: llm/__init__.py
+========================================================================
+
+from llm.vllm_client import VLLMClient
+
+__all__ = ["VLLMClient"]
+
+
+========================================================================
+FILE 23: llm/vllm_client.py
+========================================================================
+
+from __future__ import annotations
+
+import base64
+import json
+import mimetypes
+from pathlib import Path
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class VLLMClient:
+    """Small OpenAI-compatible client for vLLM servers.
+
+    vLLM commonly exposes an OpenAI-compatible API at /v1/chat/completions.
+    This client intentionally uses the Python standard library so the project
+    remains easy to run inside AMD Jupyter notebook cloud images.
+    """
+
+    base_url: str = "http://localhost:8000/v1"
+    model: str = "amd-hackathon-model"
+    api_key: str = "EMPTY"
+    timeout_seconds: int = 20
+    enabled: bool = False
+
+    @classmethod
+    def from_config(
+        cls,
+        *,
+        base_url: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        timeout_seconds: int | None = None,
+        enabled: bool = False,
+    ) -> "VLLMClient":
+        return cls(
+            base_url=(base_url or "http://localhost:8000/v1").rstrip("/"),
+            model=model or "amd-hackathon-model",
+            api_key=api_key or "EMPTY",
+            timeout_seconds=timeout_seconds or 20,
+            enabled=enabled,
+        )
+
+    def explain_report(self, report: dict[str, Any]) -> str | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "Write a concise insurance operations explanation for this validation or "
+            "recommendation report. Do not change the deterministic status or missing "
+            "documents. Keep it suitable for a hackathon application.\n\n"
+            f"{json.dumps(_compact_report(report), indent=2)}"
+        )
+        try:
+            return self.chat(prompt, max_tokens=220, temperature=0.2)
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def ask_intake_question(self, collected: dict[str, Any], missing: list[str]) -> str | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "You are running an insurance operations CLI. Ask exactly one short, natural question "
+            "to collect the next missing item. Do not show numbered options. Do not explain features.\n\n"
+            f"Collected so far: {json.dumps(collected, indent=2)}\n"
+            f"Missing fields: {json.dumps(missing)}"
+        )
+        try:
+            return self.chat(
+                prompt,
+                system="You are a concise insurance assistant that asks one question at a time.",
+                max_tokens=80,
+                temperature=0.3,
+            )
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def answer_with_tool_result(
+        self,
+        user_text: str,
+        collected: dict[str, Any],
+        missing: list[str],
+        tool_result: dict[str, Any],
+    ) -> str | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "The user asked a clarification question during insurance workflow intake. "
+            "Answer using only the provided tool result. Do not invent options that are not in the tool result. "
+            "Keep it concise and end with one natural follow-up question for the next missing field.\n\n"
+            f"Collected so far: {json.dumps(collected, indent=2)}\n"
+            f"Missing fields: {json.dumps(missing)}\n"
+            f"User question: {user_text}\n"
+            f"Tool result: {json.dumps(tool_result, indent=2)}"
+        )
+        try:
+            return self.chat(
+                prompt,
+                system="You answer clarification questions in a concise insurance operations CLI.",
+                max_tokens=180,
+                temperature=0.2,
+            )
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def extract_intake(
+        self,
+        transcript: list[dict[str, str]],
+        current: dict[str, Any],
+        domain_context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "Extract structured insurance workflow intake from the transcript. Return JSON only. "
+            "Do not include markdown. Preserve existing values unless the user clearly changes them.\n\n"
+            "Use the domain context for allowed workflow types, insurance categories, and claim types. "
+            "Do not invent values outside the domain context.\n"
+            "For document workflows, collect file_paths as a JSON array of strings. "
+            "For claim workflows, collect incident_description when the user describes what happened.\n"
+            "For product discovery, collect user_inputs as a JSON object of any business/customer details.\n"
+            "Set ready_to_run true only when the user says to run, submit, start, validate, proceed, or has provided file paths for a document workflow.\n\n"
+            "Return this JSON shape:\n"
+            "{"
+            "\"customer_type\": null,"
+            "\"workflow_type\": null,"
+            "\"insurance_category\": null,"
+            "\"case_type\": null,"
+            "\"file_paths\": [],"
+            "\"user_inputs\": {},"
+            "\"incident_description\": null,"
+            "\"ready_to_run\": false"
+            "}\n\n"
+            f"Existing values: {json.dumps(current, indent=2)}\n"
+            f"Domain context: {json.dumps(domain_context, indent=2)}\n"
+            f"Transcript: {json.dumps(transcript, indent=2)}"
+        )
+        try:
+            content = self.chat(
+                prompt,
+                system="You are a precise JSON extraction engine for an insurance CLI.",
+                max_tokens=420,
+                temperature=0.0,
+            )
+            return _extract_json_object(content)
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def validate_application_details(self, details: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "Validate these individual insurance application details. Return JSON only with keys "
+            "is_valid, issues, and normalized_details. Check that name, date_of_birth, address, "
+            "phone_number, job, and annual_income are plausible and present. Do not reject just "
+            "because the details are brief.\n\n"
+            f"Details: {json.dumps(details, indent=2)}"
+        )
+        try:
+            content = self.chat(
+                prompt,
+                system="You validate insurance application details and return compact JSON only.",
+                max_tokens=260,
+                temperature=0.0,
+            )
+            return _extract_json_object(content)
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def verify_identity_consistency(self, user_details: dict[str, Any], extracted_fields: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "Compare user-provided details with fields extracted from PAN/Aadhaar/identity documents. "
+            "The match does not need to be exact, but it must be consistent. Return JSON only with "
+            "keys is_consistent, issues, and confidence. Treat abbreviations, casing, and minor spelling "
+            "differences as acceptable.\n\n"
+            f"User details: {json.dumps(user_details, indent=2)}\n"
+            f"Extracted fields: {json.dumps(extracted_fields, indent=2)}"
+        )
+        try:
+            content = self.chat(
+                prompt,
+                system="You verify KYC consistency and return compact JSON only.",
+                max_tokens=260,
+                temperature=0.0,
+            )
+            return _extract_json_object(content)
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def summarize_kyc_fields(self, payload: dict[str, Any]) -> str | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "Write a very precise KYC field summary for the user. Mention fields parsed from each document, "
+            "then state whether the details appear aligned. Do not add legal advice or extra workflow steps. "
+            "Keep it under 120 words.\n\n"
+            f"{json.dumps(payload, indent=2)}"
+        )
+        try:
+            return self.chat(
+                prompt,
+                system="You summarize parsed KYC fields precisely and concisely.",
+                max_tokens=180,
+                temperature=0.0,
+            )
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def extract_document_fields_from_file(self, path: Path) -> dict[str, Any] | None:
+        if not self.enabled or not path.exists():
+            return None
+        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if not (mime_type.startswith("image/") or mime_type == "application/pdf"):
+            return None
+        data_url = f"data:{mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        prompt = (
+            "Parse this Indian insurance/KYC document. Return JSON only. If a field is not visible, use null. "
+            "Use document_type as one of pan, identity_proof, address_proof, bank_proof, claim_form, "
+            "policy_copy, hospital_bill, discharge_summary, unknown. Extract these fields where visible: "
+            "customer_name, date_of_birth, pan_number, aadhaar_number, address, phone_number, "
+            "policy_number, patient_name, insured_name, claim_amount, incident_date.\n\n"
+            "Return shape: {\"document_type\":\"unknown\",\"fields\":{},\"summary\":\"\"}. "
+            "Every value inside fields must be a string or null, never an object or array."
+        )
+        try:
+            content = self.chat_multimodal(
+                prompt,
+                data_url,
+                system="You are a precise document parsing engine. Return JSON only.",
+                max_tokens=420,
+                temperature=0.0,
+            )
+            parsed = _extract_json_object(content)
+            return parsed if isinstance(parsed, dict) else None
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def chat(
+        self,
+        prompt: str,
+        *,
+        system: str = "You explain insurance workflow results clearly while preserving deterministic rule outcomes.",
+        max_tokens: int = 220,
+        temperature: float = 0.2,
+    ) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system,
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return data["choices"][0]["message"]["content"].strip()
+
+    def chat_multimodal(
+        self,
+        prompt: str,
+        data_url: str,
+        *,
+        system: str,
+        max_tokens: int = 420,
+        temperature: float = 0.0,
+    ) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {"type": "text", "text": prompt},
+                    ],
+                },
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return data["choices"][0]["message"]["content"].strip()
+
+
+def _compact_report(report: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        "workflow_type",
+        "customer_type",
+        "case_type",
+        "status",
+        "confidence",
+        "human_review_required",
+        "missing_documents",
+        "validation_issues",
+        "next_action",
+        "recommendations",
+    ]
+    return {key: report[key] for key in keys if key in report}
+
+
+def _extract_json_object(content: str) -> dict[str, Any] | None:
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:].strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    parsed = json.loads(text[start : end + 1])
+    return parsed if isinstance(parsed, dict) else None
+
+
+========================================================================
+FILE 24: mcp_server/client.py
+========================================================================
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+CATALOG_PATH = Path(__file__).with_name("insurance_catalog.json")
+
+
+def _load_catalog() -> list[dict[str, Any]]:
+    return json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+
+
+def get_business_insurance_schemes(category: str, user_inputs: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    return _filter_schemes("business", category)
+
+
+def get_individual_insurance_schemes(category: str, user_inputs: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    return _filter_schemes("individual", category)
+
+
+def _filter_schemes(customer_type: str, category: str) -> list[dict[str, Any]]:
+    normalized = category.lower().replace(" insurance", "").replace(" ", "_")
+    matches = [
+        product
+        for product in _load_catalog()
+        if product["customer_type"] == customer_type and product["category"] == normalized
+    ]
+    return matches
+
+
+========================================================================
+FILE 25: mcp_server/server.py
+========================================================================
+
+"""Mock MCP-style catalogue server facade.
+
+The hackathon app keeps the catalogue local, while the client functions mimic
+the boundary a real MCP server would expose.
+"""
+
+from mcp_server.client import get_business_insurance_schemes, get_individual_insurance_schemes
+
+__all__ = ["get_business_insurance_schemes", "get_individual_insurance_schemes"]
+
+
+========================================================================
+FILE 26: mcp_server/insurance_catalog.json
+========================================================================
+
+[
+  {
+    "scheme_id": "BUS-PROP-001",
+    "customer_type": "business",
+    "category": "property",
+    "scheme_name": "Commercial Property Protect Plus",
+    "description": "Covers commercial property against fire, burglary, natural disaster, and business interruption.",
+    "eligibility": {"business_age_months": 6, "property_use": "commercial"},
+    "coverage_highlights": ["Fire and allied perils", "Burglary", "Natural disaster", "Business interruption"],
+    "required_documents": ["certificate_of_incorporation", "property_ownership_or_lease", "fire_safety_certificate", "latest_utility_bill"],
+    "claim_types_supported": ["property_damage"],
+    "recommended_next_step": "Schedule a property risk inspection and submit ownership or lease documents."
+  },
+  {
+    "scheme_id": "BUS-PROP-002",
+    "customer_type": "business",
+    "category": "property",
+    "scheme_name": "Shop Secure Property Cover",
+    "description": "Property and stock cover for small shops, offices, clinics, and local service businesses.",
+    "eligibility": {"business_age_months": 3, "property_use": "retail_or_office"},
+    "coverage_highlights": ["Building and contents", "Stock protection", "Burglary", "Glass and signboard cover"],
+    "required_documents": ["business_registration", "shop_establishment_certificate", "stock_declaration", "latest_utility_bill"],
+    "claim_types_supported": ["property_damage"],
+    "recommended_next_step": "Share shop registration, stock value, and premises details."
+  },
+  {
+    "scheme_id": "BUS-PROP-003",
+    "customer_type": "business",
+    "category": "property",
+    "scheme_name": "Industrial Asset Shield",
+    "description": "Property cover for factories, warehouses, machinery, and industrial inventory.",
+    "eligibility": {"business_age_months": 12, "property_use": "industrial"},
+    "coverage_highlights": ["Plant and machinery", "Warehouse stock", "Fire and explosion", "Machinery breakdown add-on"],
+    "required_documents": ["certificate_of_incorporation", "asset_schedule", "factory_license", "fire_safety_certificate"],
+    "claim_types_supported": ["property_damage"],
+    "recommended_next_step": "Upload asset schedule, factory license, and fire safety details."
+  },
+  {
+    "scheme_id": "BUS-PROP-004",
+    "customer_type": "business",
+    "category": "property",
+    "scheme_name": "Office Continuity Property Plan",
+    "description": "Office property cover with electronics, contents, and business interruption support.",
+    "eligibility": {"business_age_months": 6, "property_use": "office"},
+    "coverage_highlights": ["Office equipment", "Electronic assets", "Business interruption", "Temporary relocation costs"],
+    "required_documents": ["certificate_of_incorporation", "office_lease_or_ownership", "asset_register", "latest_utility_bill"],
+    "claim_types_supported": ["property_damage"],
+    "recommended_next_step": "Submit office lease or ownership proof and an asset register."
+  },
+  {
+    "scheme_id": "BUS-LIAB-001",
+    "customer_type": "business",
+    "category": "liability",
+    "scheme_name": "Professional Liability Shield",
+    "description": "Protects firms against covered professional negligence and client claims.",
+    "eligibility": {"professional_services": true},
+    "coverage_highlights": ["Defense costs", "Errors and omissions", "Client claim settlement support"],
+    "required_documents": ["certificate_of_incorporation", "service_contract_samples", "revenue_declaration"],
+    "claim_types_supported": ["professional_liability"],
+    "recommended_next_step": "Submit service profile, annual revenue, and past claim declaration."
+  },
+  {
+    "scheme_id": "BUS-LIAB-002",
+    "customer_type": "business",
+    "category": "liability",
+    "scheme_name": "General Liability Guard",
+    "description": "Public and third-party liability protection for customer-facing businesses.",
+    "eligibility": {"customer_visits": true},
+    "coverage_highlights": ["Third-party injury", "Property damage liability", "Legal defense costs"],
+    "required_documents": ["certificate_of_incorporation", "premises_details", "revenue_declaration"],
+    "claim_types_supported": ["professional_liability"],
+    "recommended_next_step": "Share premises details, annual turnover, and visitor exposure."
+  },
+  {
+    "scheme_id": "BUS-LIAB-003",
+    "customer_type": "business",
+    "category": "liability",
+    "scheme_name": "Directors Liability Protect",
+    "description": "Management liability cover for directors and officers of growing companies.",
+    "eligibility": {"registered_company": true},
+    "coverage_highlights": ["Director defense costs", "Regulatory proceedings", "Employment practices liability add-on"],
+    "required_documents": ["certificate_of_incorporation", "board_resolution", "latest_financials"],
+    "claim_types_supported": ["professional_liability"],
+    "recommended_next_step": "Upload board details, latest financials, and governance disclosures."
+  },
+  {
+    "scheme_id": "BUS-LIAB-004",
+    "customer_type": "business",
+    "category": "liability",
+    "scheme_name": "Product Liability Care",
+    "description": "Liability cover for businesses that manufacture, distribute, or sell physical products.",
+    "eligibility": {"sells_physical_products": true},
+    "coverage_highlights": ["Product injury claims", "Product property damage", "Recall expense add-on"],
+    "required_documents": ["certificate_of_incorporation", "product_catalogue", "quality_certifications", "revenue_declaration"],
+    "claim_types_supported": ["professional_liability"],
+    "recommended_next_step": "Submit product catalogue, quality certificates, and sales territories."
+  },
+  {
+    "scheme_id": "BUS-CYBER-001",
+    "customer_type": "business",
+    "category": "cybersecurity",
+    "scheme_name": "Cyber Risk Response",
+    "description": "Cyber insurance for businesses handling customer data, online payments, or cloud systems.",
+    "eligibility": {"uses_digital_systems": true},
+    "coverage_highlights": ["Data breach response", "Cyber extortion support", "Forensic investigation", "Notification costs"],
+    "required_documents": ["certificate_of_incorporation", "it_asset_declaration", "cybersecurity_controls_declaration", "revenue_declaration"],
+    "claim_types_supported": ["cybersecurity"],
+    "recommended_next_step": "Share IT asset details, data exposure, and current security controls."
+  },
+  {
+    "scheme_id": "BUS-CYBER-002",
+    "customer_type": "business",
+    "category": "cybersecurity",
+    "scheme_name": "SME Cyber Shield",
+    "description": "Cybersecurity insurance tailored for small and midsize businesses.",
+    "eligibility": {"employee_count_max": 250},
+    "coverage_highlights": ["Phishing loss support", "Business interruption", "Ransomware response", "Legal assistance"],
+    "required_documents": ["business_registration", "it_asset_declaration", "bank_account_proof", "revenue_declaration"],
+    "claim_types_supported": ["cybersecurity"],
+    "recommended_next_step": "Submit employee count, system list, and online transaction exposure."
+  },
+  {
+    "scheme_id": "BUS-CYBER-003",
+    "customer_type": "business",
+    "category": "cybersecurity",
+    "scheme_name": "Data Breach Protect",
+    "description": "Coverage focused on privacy incidents, customer data leaks, and breach response costs.",
+    "eligibility": {"stores_customer_data": true},
+    "coverage_highlights": ["Privacy breach response", "Customer notification", "Credit monitoring support", "Regulatory defense"],
+    "required_documents": ["certificate_of_incorporation", "data_processing_summary", "privacy_policy", "cybersecurity_controls_declaration"],
+    "claim_types_supported": ["cybersecurity"],
+    "recommended_next_step": "Share data categories handled, privacy policy, and security control summary."
+  },
+  {
+    "scheme_id": "BUS-CYBER-004",
+    "customer_type": "business",
+    "category": "cybersecurity",
+    "scheme_name": "Cloud Operations Cyber Cover",
+    "description": "Cyber cover for cloud-first businesses, SaaS teams, and digital operations.",
+    "eligibility": {"uses_cloud_services": true},
+    "coverage_highlights": ["Cloud outage loss", "Incident response", "Digital asset restoration", "Vendor breach support"],
+    "required_documents": ["certificate_of_incorporation", "cloud_vendor_list", "it_asset_declaration", "incident_response_plan"],
+    "claim_types_supported": ["cybersecurity"],
+    "recommended_next_step": "Upload cloud vendor list, incident response plan, and IT asset declaration."
+  },
+  {
+    "scheme_id": "IND-HEALTH-001",
+    "customer_type": "individual",
+    "category": "health",
+    "scheme_name": "Health Assure Smart",
+    "description": "Individual and family floater medical insurance with cashless hospital access.",
+    "eligibility": {"age_min": 18, "age_max": 65},
+    "coverage_highlights": ["Cashless network", "Pre and post hospitalization", "Annual health checkup"],
+    "required_documents": ["pan", "address_proof", "medical_declaration"],
+    "claim_types_supported": ["health"],
+    "recommended_next_step": "Complete medical declaration and choose deductible."
+  },
+  {
+    "scheme_id": "IND-HEALTH-002",
+    "customer_type": "individual",
+    "category": "health",
+    "scheme_name": "Family Health Floater Plus",
+    "description": "Family floater health cover for spouses, children, and dependent parents.",
+    "eligibility": {"age_min": 18, "age_max": 70, "family_members": true},
+    "coverage_highlights": ["Family floater sum insured", "Room rent flexibility", "Restoration benefit"],
+    "required_documents": ["pan", "identity_proof", "medical_declaration", "family_member_details"],
+    "claim_types_supported": ["health"],
+    "recommended_next_step": "Share family member ages and preferred sum insured."
+  },
+  {
+    "scheme_id": "IND-HEALTH-003",
+    "customer_type": "individual",
+    "category": "health",
+    "scheme_name": "Senior Care Health Plan",
+    "description": "Health insurance focused on older adults with chronic care support options.",
+    "eligibility": {"age_min": 55, "age_max": 80},
+    "coverage_highlights": ["Senior hospitalization", "Day care procedures", "Chronic care support"],
+    "required_documents": ["pan", "identity_proof", "medical_history", "medical_declaration"],
+    "claim_types_supported": ["health"],
+    "recommended_next_step": "Provide medical history and preferred hospital network."
+  },
+  {
+    "scheme_id": "IND-HEALTH-004",
+    "customer_type": "individual",
+    "category": "health",
+    "scheme_name": "Critical Care Health Shield",
+    "description": "Health plan with enhanced critical illness and recovery support benefits.",
+    "eligibility": {"age_min": 18, "age_max": 60},
+    "coverage_highlights": ["Critical illness lump sum", "Hospital cash", "Recovery support"],
+    "required_documents": ["pan", "identity_proof", "medical_declaration", "income_proof"],
+    "claim_types_supported": ["health"],
+    "recommended_next_step": "Complete medical declaration and choose critical illness benefit."
+  },
+  {
+    "scheme_id": "IND-LIFE-001",
+    "customer_type": "individual",
+    "category": "life",
+    "scheme_name": "Life Cover Prime",
+    "description": "Term life insurance with flexible premium modes.",
+    "eligibility": {"age_min": 18, "age_max": 60},
+    "coverage_highlights": ["High sum assured", "Critical illness rider", "Accidental death rider"],
+    "required_documents": ["pan", "identity_proof", "income_proof"],
+    "claim_types_supported": ["life"],
+    "recommended_next_step": "Complete income and nominee details."
+  },
+  {
+    "scheme_id": "IND-LIFE-002",
+    "customer_type": "individual",
+    "category": "life",
+    "scheme_name": "Term Life Secure",
+    "description": "Pure protection term insurance for income replacement and family security.",
+    "eligibility": {"age_min": 21, "age_max": 55},
+    "coverage_highlights": ["Large term cover", "Flexible policy term", "Waiver of premium rider"],
+    "required_documents": ["pan", "identity_proof", "income_proof", "nominee_details"],
+    "claim_types_supported": ["life"],
+    "recommended_next_step": "Share income proof, nominee details, and preferred cover amount."
+  },
+  {
+    "scheme_id": "IND-LIFE-003",
+    "customer_type": "individual",
+    "category": "life",
+    "scheme_name": "Life Income Protector",
+    "description": "Life cover designed to provide monthly income support to nominees.",
+    "eligibility": {"age_min": 25, "age_max": 60},
+    "coverage_highlights": ["Monthly income benefit", "Lump sum option", "Accidental death rider"],
+    "required_documents": ["pan", "identity_proof", "income_proof", "nominee_details"],
+    "claim_types_supported": ["life"],
+    "recommended_next_step": "Choose nominee income period and submit income proof."
+  },
+  {
+    "scheme_id": "IND-LIFE-004",
+    "customer_type": "individual",
+    "category": "life",
+    "scheme_name": "Life Savings Advantage",
+    "description": "Life insurance with maturity benefit and optional protection riders.",
+    "eligibility": {"age_min": 18, "age_max": 50},
+    "coverage_highlights": ["Life cover", "Maturity benefit", "Premium payment flexibility"],
+    "required_documents": ["pan", "identity_proof", "income_proof", "bank_proof"],
+    "claim_types_supported": ["life"],
+    "recommended_next_step": "Select premium term and provide income plus bank details."
+  },
+  {
+    "scheme_id": "IND-MOTOR-001",
+    "customer_type": "individual",
+    "category": "motor",
+    "scheme_name": "Motor Guard Comprehensive",
+    "description": "Own damage and third-party cover for private vehicles.",
+    "eligibility": {"vehicle_type": "private"},
+    "coverage_highlights": ["Own damage", "Third-party liability", "Zero depreciation add-on"],
+    "required_documents": ["registration_certificate", "driving_license", "previous_policy"],
+    "claim_types_supported": ["motor"],
+    "recommended_next_step": "Provide registration certificate and previous policy details."
+  },
+  {
+    "scheme_id": "IND-MOTOR-002",
+    "customer_type": "individual",
+    "category": "motor",
+    "scheme_name": "Car Protect Value",
+    "description": "Affordable comprehensive insurance for private cars with essential add-ons.",
+    "eligibility": {"vehicle_type": "private_car"},
+    "coverage_highlights": ["Own damage", "Third-party liability", "Roadside assistance"],
+    "required_documents": ["registration_certificate", "driving_license", "previous_policy"],
+    "claim_types_supported": ["motor"],
+    "recommended_next_step": "Share car registration number and previous policy expiry date."
+  },
+  {
+    "scheme_id": "IND-MOTOR-003",
+    "customer_type": "individual",
+    "category": "motor",
+    "scheme_name": "Two Wheeler Shield",
+    "description": "Motor insurance for scooters and motorcycles with theft and damage protection.",
+    "eligibility": {"vehicle_type": "two_wheeler"},
+    "coverage_highlights": ["Accidental damage", "Theft protection", "Personal accident cover"],
+    "required_documents": ["registration_certificate", "driving_license", "previous_policy"],
+    "claim_types_supported": ["motor"],
+    "recommended_next_step": "Provide bike registration certificate and owner details."
+  },
+  {
+    "scheme_id": "IND-MOTOR-004",
+    "customer_type": "individual",
+    "category": "motor",
+    "scheme_name": "EV Motor Advantage",
+    "description": "Comprehensive insurance for electric cars and two wheelers.",
+    "eligibility": {"vehicle_type": "electric_vehicle"},
+    "coverage_highlights": ["Battery cover add-on", "Charging equipment cover", "Own damage"],
+    "required_documents": ["registration_certificate", "driving_license", "previous_policy", "vehicle_invoice"],
+    "claim_types_supported": ["motor"],
+    "recommended_next_step": "Share EV invoice, battery details, and registration certificate."
+  }
+]
+
+
+========================================================================
+FILE 27: orchestrator/trace.py
+========================================================================
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+
+@dataclass
+class WorkflowTrace:
+    session_id: str
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+    def add(self, agent: str, action: str, detail: dict[str, Any] | None = None) -> None:
+        self.events.append(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "agent": agent,
+                "action": action,
+                "detail": detail or {},
+            }
+        )
+
+    def to_list(self) -> list[dict[str, Any]]:
+        return list(self.events)
+
+
+========================================================================
+FILE 28: orchestrator/workflow.py
+========================================================================
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from uuid import uuid4
+
+from agents.database import DatabaseAgent
+from agents.document_classifier import DocumentClassifierAgent
+from agents.document_intake import DocumentIntakeAgent
+from agents.escalation import EscalationAgent
+from agents.extraction import ExtractionAgent
+from agents.product_discovery import ProductDiscoveryAgent
+from agents.reconciliation import ReconciliationAgent
+from agents.report import ReportAgent
+from agents.router import RouterAgent
+from agents.validation import ValidationAgent
+from llm import VLLMClient
+from orchestrator.trace import WorkflowTrace
+from schemas.messages import DocumentPacketMessage, ProductDiscoveryMessage, UserIntentMessage
+
+
+class WorkflowOrchestrator:
+    def __init__(
+        self,
+        use_llm: bool | None = None,
+        *,
+        vllm_base_url: str | None = None,
+        vllm_model: str | None = None,
+        vllm_api_key: str | None = None,
+        vllm_timeout_seconds: int | None = None,
+    ) -> None:
+        self.llm_client = VLLMClient.from_config(
+            base_url=vllm_base_url,
+            model=vllm_model,
+            api_key=vllm_api_key,
+            timeout_seconds=vllm_timeout_seconds,
+            enabled=bool(use_llm),
+        )
+        self.router = RouterAgent()
+        self.product_discovery = ProductDiscoveryAgent()
+        self.document_intake = DocumentIntakeAgent()
+        self.document_classifier = DocumentClassifierAgent()
+        self.extraction = ExtractionAgent()
+        self.reconciliation = ReconciliationAgent()
+        self.validation = ValidationAgent()
+        self.escalation = EscalationAgent()
+        self.report = ReportAgent(self.llm_client)
+        self.database = DatabaseAgent()
+
+    def run_product_discovery(self, message: ProductDiscoveryMessage):
+        intent = UserIntentMessage(
+            session_id=message.session_id,
+            customer_type=message.customer_type,
+            intent="new_insurance",
+            raw_input=message.insurance_category,
+        )
+        trace = WorkflowTrace(message.session_id)
+        self.router.route(intent, trace)
+        recommendations = self.product_discovery.recommend(message, trace)
+        report = self.report.product_report(recommendations, trace)
+        self.database.save_report(message.session_id, report)
+        self._write_report(report)
+        return report
+
+    def run_document_validation(self, message: DocumentPacketMessage):
+        intent_name = "kyc_validation" if message.workflow_type == "kyc_validation" else message.workflow_type
+        intent = UserIntentMessage(
+            session_id=message.session_id,
+            customer_type=message.customer_type,
+            intent=intent_name,
+            raw_input=message.case_type,
+        )
+        trace = WorkflowTrace(message.session_id)
+        self.router.route(intent, trace)
+        parsed = self.document_intake.parse(message, trace, self.llm_client)
+        classified = self.document_classifier.classify(parsed, trace)
+        extracted = self.extraction.extract(classified, trace)
+        reconciled = self.reconciliation.reconcile(extracted, trace)
+        validation = self.validation.validate(
+            message.customer_type,
+            message.workflow_type,
+            message.case_type,
+            classified,
+            extracted,
+            reconciled,
+            trace,
+            user_inputs=message.user_inputs,
+            incident_description=message.incident_description,
+            llm_client=self.llm_client,
+        )
+        validation = self.escalation.decide(validation, trace)
+        report = self.report.validation_report(
+            message.customer_type,
+            message.workflow_type,
+            message.case_type,
+            validation,
+            extracted,
+            trace,
+            user_inputs=message.user_inputs,
+            incident_description=message.incident_description,
+        )
+        self.database.save_report(message.session_id, report)
+        self._write_report(report)
+        return report
+
+    @staticmethod
+    def new_session_id() -> str:
+        return f"SES-{uuid4().hex[:10].upper()}"
+
+    @staticmethod
+    def _write_report(report) -> None:
+        output_dir = Path("outputs/reports")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / f"{report.report_id}.json").write_text(json.dumps(report.json_report, indent=2), encoding="utf-8")
+        (output_dir / f"{report.report_id}.md").write_text(report.markdown_report, encoding="utf-8")
+
+
+========================================================================
+FILE 29: rules/claim_rules.py
+========================================================================
+
+CLAIM_RULES = {
+    "business": {
+        "property_damage": {
+            "required_documents": ["claim_form", "policy_copy", "incident_report", "repair_estimate"],
+            "conditional_documents": [{"document": "police_report", "condition": "theft_or_legal_case"}],
+            "field_checks": ["policy_number", "incident_date", "claim_amount"],
+            "consistency_checks": ["policy_number", "company_name"],
+        },
+        "professional_liability": {
+            "required_documents": ["claim_form", "policy_copy", "legal_notice", "client_contract", "incident_summary"],
+            "conditional_documents": [],
+            "field_checks": ["policy_number", "claim_amount", "incident_date"],
+            "consistency_checks": ["policy_number", "company_name"],
+        },
+        "cybersecurity": {
+            "required_documents": ["claim_form", "policy_copy", "incident_report", "forensic_report", "loss_estimate"],
+            "conditional_documents": [{"document": "police_report", "condition": "fraud_extortion_or_legal_case"}],
+            "field_checks": ["policy_number", "incident_date", "claim_amount"],
+            "consistency_checks": ["policy_number", "company_name"],
+        },
+    },
+    "individual": {
+        "health": {
+            "required_documents": ["claim_form", "policy_copy", "hospital_bill", "discharge_summary"],
+            "conditional_documents": [],
+            "field_checks": ["policy_number", "patient_name", "claim_amount"],
+            "consistency_checks": ["policy_number", "patient_name"],
+        },
+        "life": {
+            "required_documents": ["claim_form", "policy_copy", "death_certificate", "nominee_id_proof"],
+            "conditional_documents": [{"document": "police_report", "condition": "accidental_or_suspicious_death"}],
+            "field_checks": ["policy_number", "insured_name", "date_of_death"],
+            "consistency_checks": ["policy_number", "insured_name"],
+        },
+        "motor": {
+            "required_documents": ["claim_form", "policy_copy", "registration_certificate", "driving_license", "repair_estimate"],
+            "conditional_documents": [{"document": "police_report", "condition": "third_party_or_theft"}],
+            "field_checks": ["policy_number", "vehicle_number", "incident_date", "claim_amount"],
+            "consistency_checks": ["policy_number", "vehicle_number"],
+        },
+    },
+}
+
+
+========================================================================
+FILE 30: rules/kyc_rules.py
+========================================================================
+
+KYC_RULES = {
+    "individual": {
+        "required_documents": ["pan", "identity_proof"],
+        "field_checks": ["customer_name", "date_of_birth", "pan_number", "aadhaar_number", "address", "phone_number"],
+        "consistency_checks": ["customer_name", "date_of_birth", "address"],
+    },
+    "business": {
+        "required_documents": [
+            "certificate_of_incorporation",
+            "company_pan",
+            "gst_certificate",
+            "registered_address_proof",
+            "board_resolution",
+            "authorized_signatory_id_proof",
+            "authorized_signatory_address_proof",
+            "beneficial_ownership_declaration",
+            "bank_account_proof",
+        ],
+        "field_checks": ["company_name", "pan_number", "gstin", "registered_address", "authorized_signatory", "bank_account_holder"],
+        "consistency_checks": ["company_name", "pan_number", "registered_address"],
+    },
+}
+
+
+========================================================================
+FILE 31: schemas/messages.py
+========================================================================
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal
+
+try:
+    from pydantic import BaseModel as _PydanticBaseModel
+    from pydantic import Field
+except ModuleNotFoundError:
+    _PydanticBaseModel = None
+
+    def Field(default_factory=None, default=None):  # type: ignore[no-redef]
+        if default_factory is not None:
+            return field(default_factory=default_factory)
+        return default
+
+
+if _PydanticBaseModel:
+
+    class MessageModel(_PydanticBaseModel):
+        def to_dict(self) -> dict[str, Any]:
+            return self.model_dump()
+
+else:
+
+    @dataclass
+    class MessageModel:
+        def __init_subclass__(cls) -> None:
+            dataclass(cls)
+
+        def to_dict(self) -> dict[str, Any]:
+            return asdict(self)
+
+
+class UserIntentMessage(MessageModel):
+    session_id: str
+    customer_type: Literal["business", "individual"]
+    intent: Literal["new_insurance", "claim_validation", "kyc_validation", "kyb_validation"]
+    raw_input: str | None = None
+
+
+class ProductDiscoveryMessage(MessageModel):
+    session_id: str
+    customer_type: Literal["business", "individual"]
+    insurance_category: str
+    user_inputs: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProductRecommendationMessage(MessageModel):
+    session_id: str
+    customer_type: Literal["business", "individual"]
+    insurance_category: str
+    user_inputs: dict[str, Any] = Field(default_factory=dict)
+    recommendations: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DocumentPacketMessage(MessageModel):
+    session_id: str
+    customer_type: Literal["business", "individual"]
+    workflow_type: Literal["claim_validation", "kyc_validation", "kyb_validation"]
+    case_type: str
+    file_paths: list[str] = Field(default_factory=list)
+    user_inputs: dict[str, Any] = Field(default_factory=dict)
+    incident_description: str | None = None
+
+
+class ParsedDocumentMessage(MessageModel):
+    session_id: str
+    documents: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ClassifiedDocumentMessage(MessageModel):
+    session_id: str
+    documents: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ExtractionResultMessage(MessageModel):
+    session_id: str
+    extracted_fields: dict[str, Any] = Field(default_factory=dict)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = 0.0
+
+
+class ReconciliationMessage(MessageModel):
+    session_id: str
+    inconsistencies: list[dict[str, Any]] = Field(default_factory=list)
+    canonical_fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class ValidationResultMessage(MessageModel):
+    session_id: str
+    status: Literal[
+        "Ready for Submission",
+        "Needs Additional Documents",
+        "Needs Correction",
+        "Human Review Required",
+    ]
+    human_review_required: bool
+    confidence: float = 0.0
+    missing_documents: list[str] = Field(default_factory=list)
+    issues: list[dict[str, Any]] = Field(default_factory=list)
+    next_action: str = ""
+
+
+class ReportMessage(MessageModel):
+    session_id: str
+    report_id: str
+    report_type: str
+    json_report: dict[str, Any] = Field(default_factory=dict)
+    markdown_report: str = ""
+
+
+========================================================================
+FILE 32: tests/test_llm_chat_clarifications.py
+========================================================================
+
+import unittest
+
+from cli.llm_chat import _answer_clarification, _empty_intake, _missing_fields
+
+
+class FakeClient:
+    def answer_with_tool_result(self, user_text, collected, missing, tool_result):
+        return None
+
+
+class LLMChatClarificationTests(unittest.TestCase):
+    def test_options_question_answers_supported_workflows(self):
+        collected = _empty_intake()
+        collected["customer_type"] = "individual"
+        answer = _answer_clarification(FakeClient(), "What options do you have?", collected, ["workflow_type"])
+
+        self.assertIn("find new insurance", answer)
+        self.assertIn("validate claim documents", answer)
+        self.assertIn("complete KYC validation", answer)
+        self.assertIn("Which one", answer)
+
+    def test_new_individual_insurance_options_answers_categories(self):
+        collected = _empty_intake()
+        collected["customer_type"] = "individual"
+        collected["workflow_type"] = "new_insurance"
+        answer = _answer_clarification(FakeClient(), "What options do you have?", collected, ["insurance_category"])
+
+        self.assertIn("health", answer)
+        self.assertIn("motor", answer)
+        self.assertIn("life", answer)
+        self.assertNotIn("personal accident", answer)
+
+    def test_give_me_options_answers_supported_workflows(self):
+        collected = _empty_intake()
+        collected["customer_type"] = "individual"
+        answer = _answer_clarification(FakeClient(), "give me options", collected, ["workflow_type"])
+
+        self.assertIn("find new insurance", answer)
+        self.assertIn("validate claim documents", answer)
+
+    def test_individual_user_details_are_requested_after_action(self):
+        collected = _empty_intake()
+        collected["customer_type"] = "individual"
+        collected["workflow_type"] = "claim_validation"
+
+        self.assertEqual(_missing_fields(collected), ["user details"])
+
+    def test_business_details_are_requested_after_action(self):
+        collected = _empty_intake()
+        collected["customer_type"] = "business"
+        collected["workflow_type"] = "kyb_validation"
+
+        self.assertEqual(_missing_fields(collected), ["business details"])
+
+    def test_business_details_unlock_document_upload(self):
+        collected = _empty_intake()
+        collected["customer_type"] = "business"
+        collected["workflow_type"] = "claim_validation"
+        collected["case_type"] = "property_damage"
+        collected["user_inputs"] = {
+            "company_name": "Acme Manufacturing Pvt Ltd",
+            "business_type": "manufacturing",
+            "registered_address": "12 Industrial Estate, Pune",
+            "contact_person": "Nisha Rao",
+            "contact_phone": "9876543210",
+            "annual_turnover": "50000000",
+            "employee_count": "120",
+        }
+
+        self.assertEqual(_missing_fields(collected), ["incident description", "document file paths"])
+        collected["incident_description"] = "Warehouse roof was damaged during heavy rain on 10 May."
+
+        self.assertEqual(_missing_fields(collected), ["document file paths"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+========================================================================
+FILE 33: tests/test_workflows.py
+========================================================================
+
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from document_processing.intake import parse_document
+from document_processing.classifier import classify_document
+from document_processing.extraction import extract_fields
+from agents.reconciliation import ReconciliationAgent
+from agents.validation import ValidationAgent
+from domain_tools import get_claim_types, get_insurance_categories, get_product_catalog_options
+from orchestrator.trace import WorkflowTrace
+from orchestrator.workflow import WorkflowOrchestrator
+from schemas.messages import ClassifiedDocumentMessage, DocumentPacketMessage, ExtractionResultMessage, ReconciliationMessage
+
+
+def _packet(
+    orchestrator: WorkflowOrchestrator,
+    customer_type: str,
+    workflow_type: str,
+    case_type: str,
+    folder: str,
+    **kwargs,
+) -> DocumentPacketMessage:
+    paths = sorted(str(path) for path in Path(folder).glob("*.txt"))
+    return DocumentPacketMessage(
+        session_id=orchestrator.new_session_id(),
+        customer_type=customer_type,
+        workflow_type=workflow_type,
+        case_type=case_type,
+        file_paths=paths,
+        **kwargs,
+    )
+
+
+class WorkflowTests(unittest.TestCase):
+    def test_product_categories_are_scoped_and_expanded(self):
+        self.assertEqual(get_insurance_categories("individual")["categories"], ["health", "life", "motor"])
+        self.assertEqual(get_insurance_categories("business")["categories"], ["cybersecurity", "liability", "property"])
+
+        for category in ["health", "life", "motor"]:
+            schemes = get_product_catalog_options("individual", category)["schemes"]
+            self.assertGreaterEqual(len(schemes), 4)
+
+        for category in ["cybersecurity", "liability", "property"]:
+            schemes = get_product_catalog_options("business", category)["schemes"]
+            self.assertGreaterEqual(len(schemes), 4)
+
+    def test_claim_types_are_scoped_to_active_insurance_lines(self):
+        self.assertEqual(get_claim_types("individual")["claim_types"], ["health", "life", "motor"])
+        self.assertEqual(get_claim_types("business")["claim_types"], ["cybersecurity", "professional_liability", "property_damage"])
+
+    def test_business_property_claim_missing_repair_estimate(self):
+        orchestrator = WorkflowOrchestrator()
+        report = orchestrator.run_document_validation(
+            _packet(orchestrator, "business", "claim_validation", "property_damage", "sample_data/business_property_claim")
+        )
+        self.assertEqual(report.json_report["status"], "Needs Additional Documents")
+        self.assertIn("repair_estimate", report.json_report["missing_documents"])
+
+    def test_business_kyb_missing_beneficial_ownership_only(self):
+        orchestrator = WorkflowOrchestrator()
+        report = orchestrator.run_document_validation(
+            _packet(orchestrator, "business", "kyb_validation", "kyb", "sample_data/business_kyb")
+        )
+        self.assertEqual(report.json_report["status"], "Needs Additional Documents")
+        self.assertEqual(report.json_report["missing_documents"], ["beneficial_ownership_declaration"])
+
+    def test_individual_kyc_name_mismatch(self):
+        orchestrator = WorkflowOrchestrator()
+        report = orchestrator.run_document_validation(
+            _packet(orchestrator, "individual", "kyc_validation", "kyc", "sample_data/individual_kyc_mismatch")
+        )
+        self.assertIn(report.json_report["status"], {"Needs Correction", "Human Review Required"})
+        self.assertTrue(any("customer_name mismatch" in issue["message"] for issue in report.json_report["validation_issues"]))
+
+    def test_individual_claim_requires_incident_description(self):
+        orchestrator = WorkflowOrchestrator()
+        report = orchestrator.run_document_validation(
+            _packet(orchestrator, "individual", "claim_validation", "health", "sample_data/individual_health_claim")
+        )
+        self.assertTrue(
+            any(issue["field"] == "incident_description" for issue in report.json_report["validation_issues"])
+        )
+
+    def test_individual_kyc_checks_user_detail_consistency(self):
+        orchestrator = WorkflowOrchestrator()
+        report = orchestrator.run_document_validation(
+            _packet(
+                orchestrator,
+                "individual",
+                "kyc_validation",
+                "kyc",
+                "sample_data/individual_kyc_mismatch",
+                user_inputs={"address": "221B Baker Street, London"},
+            )
+        )
+        self.assertTrue(any(issue.get("field") == "address" for issue in report.json_report["validation_issues"]))
+
+    def test_kyc_extracts_camera_ocr_text_without_strict_labels(self):
+        documents = [
+            classify_document(
+                {
+                    "document_type": "unknown",
+                    "confidence": 0.75,
+                    "extracted_text": "INCOME TAX DEPARTMENT\nName Rohan Mehta\nDOB 05/03/1992\nAABPM 1234 C",
+                }
+            ),
+            classify_document(
+                {
+                    "document_type": "unknown",
+                    "confidence": 0.75,
+                    "extracted_text": "Government of India\nRohan Mehta\nDate of Birth 05/03/1992\n1234 5678 9012\nAddress 77 Park Street Mumbai\nMobile 98765 43210",
+                }
+            ),
+        ]
+
+        extracted, _, _ = extract_fields(documents)
+        canonical = extracted["canonical"]
+
+        self.assertEqual(documents[0]["document_type"], "pan")
+        self.assertEqual(documents[1]["document_type"], "identity_proof")
+        self.assertEqual(canonical["pan_number"], "AABPM1234C")
+        self.assertEqual(canonical["aadhaar_number"], "1234 5678 9012")
+        self.assertEqual(canonical["phone_number"], "9876543210")
+        self.assertEqual(canonical["date_of_birth"], "05/03/1992")
+
+    def test_kyc_extracts_structured_vision_fields(self):
+        documents = [
+            {
+                "document_type": "pan",
+                "confidence": 0.88,
+                "extracted_text": "",
+                "vision_extracted_fields": {
+                    "customer_name": "Rohan Mehta",
+                    "pan_number": "AABPM 1234 C",
+                },
+            }
+        ]
+
+        extracted, evidence, _ = extract_fields(documents)
+
+        self.assertEqual(extracted["canonical"]["customer_name"], "Rohan Mehta")
+        self.assertEqual(extracted["canonical"]["pan_number"], "AABPM1234C")
+        self.assertEqual(evidence["pan_number"][0]["snippet"], "vision_extracted_fields")
+
+    def test_kyc_image_prefers_llm_parsing(self):
+        with TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "camera_upload.png"
+            image_path.write_bytes(b"not a real image, vision extractor is mocked")
+
+            def fake_vision_extractor(path):
+                self.assertEqual(path, image_path)
+                return {
+                    "document_type": "pan",
+                    "fields": {
+                        "customer_name": "Rahul Kumar",
+                        "date_of_birth": "01/01/1990",
+                        "pan_number": "ABCDE1234F",
+                    },
+                    "summary": "PAN card sample",
+                }
+
+            document = parse_document(
+                str(image_path),
+                vision_extractor=fake_vision_extractor,
+                prefer_vision=True,
+            )
+
+        self.assertEqual(document["extraction_method"], "vision_llm")
+        self.assertFalse(document["ocr_used"])
+        self.assertEqual(document["document_type"], "pan")
+        self.assertEqual(document["vision_extracted_fields"]["pan_number"], "ABCDE1234F")
+        self.assertTrue(document["debug"]["vision_preferred"])
+
+    def test_kyc_llm_nested_field_values_do_not_crash(self):
+        with TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "camera_upload.png"
+            image_path.write_bytes(b"not a real image, vision extractor is mocked")
+
+            def fake_vision_extractor(_path):
+                return {
+                    "document_type": "pan",
+                    "fields": {
+                        "customer_name": {"value": "Rahul Kumar", "confidence": 0.95},
+                        "pan_number": {"value": "ABCDE1234F", "confidence": 0.9},
+                    },
+                }
+
+            document = parse_document(
+                str(image_path),
+                vision_extractor=fake_vision_extractor,
+                prefer_vision=True,
+            )
+
+        extracted, _, _ = extract_fields([document])
+
+        self.assertEqual(document["vision_extracted_fields"]["customer_name"], "Rahul Kumar")
+        self.assertEqual(extracted["canonical"]["pan_number"], "ABCDE1234F")
+
+    def test_reconciliation_normalizes_aadhaar_spacing(self):
+        message = ExtractionResultMessage(
+            session_id="SES-TEST",
+            extracted_fields={
+                "canonical": {"aadhaar_number": "1234 5678 9012"},
+                "by_field": {
+                    "aadhaar_number": [
+                        {"value": "1234 5678 9012", "document_type": "identity_proof"},
+                        {"value": "123456789012", "document_type": "identity_proof"},
+                    ]
+                },
+            },
+            evidence={},
+            confidence=0.88,
+        )
+
+        reconciled = ReconciliationAgent().reconcile(message, WorkflowTrace("SES-TEST"))
+
+        self.assertEqual(reconciled.inconsistencies, [])
+
+    def test_kyc_user_date_accepts_iso_against_document_date(self):
+        validation = ValidationAgent().validate(
+            "individual",
+            "kyc_validation",
+            "kyc",
+            ClassifiedDocumentMessage(
+                session_id="SES-TEST",
+                documents=[
+                    {"document_type": "pan"},
+                    {"document_type": "identity_proof"},
+                ],
+            ),
+            ExtractionResultMessage(
+                session_id="SES-TEST",
+                extracted_fields={
+                    "canonical": {
+                        "customer_name": "Harshith Kumar",
+                        "date_of_birth": "03/06/2003",
+                        "pan_number": "ABCDE1234F",
+                        "aadhaar_number": "1234 5678 9012",
+                    }
+                },
+                evidence={},
+                confidence=0.88,
+            ),
+            ReconciliationMessage(session_id="SES-TEST", inconsistencies=[], canonical_fields={}),
+            WorkflowTrace("SES-TEST"),
+            user_inputs={"name": "Harshith Kumar", "date_of_birth": "2003-06-03"},
+        )
+
+        self.assertFalse(any(issue.get("field") == "date_of_birth" for issue in validation.issues))
+
+
+if __name__ == "__main__":
+    unittest.main()
