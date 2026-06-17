@@ -134,6 +134,8 @@ def _empty_intake() -> dict[str, Any]:
         "insurance_category": None,
         "case_type": None,
         "file_paths": [],
+        "expected_document_types": [],
+        "prefer_vision": False,
         "user_inputs": {},
         "incident_description": None,
         "ready_to_run": False,
@@ -197,6 +199,10 @@ def _merge_intake(current: dict[str, Any], extracted: dict[str, Any]) -> dict[st
             merged[key] = extracted[key]
     if extracted.get("file_paths"):
         merged["file_paths"] = extracted["file_paths"]
+    if extracted.get("expected_document_types"):
+        merged["expected_document_types"] = extracted["expected_document_types"]
+    if extracted.get("prefer_vision") is not None:
+        merged["prefer_vision"] = bool(extracted["prefer_vision"])
     if extracted.get("incident_description"):
         merged["incident_description"] = extracted["incident_description"]
     if isinstance(extracted.get("user_inputs"), dict):
@@ -237,6 +243,8 @@ def _run_collected_workflow(orchestrator: WorkflowOrchestrator, collected: dict[
             workflow_type=collected["workflow_type"],
             case_type=collected["case_type"],
             file_paths=collected["file_paths"],
+            expected_document_types=collected.get("expected_document_types", []),
+            prefer_vision=bool(collected.get("prefer_vision")),
             user_inputs=collected.get("user_inputs", {}),
             incident_description=collected.get("incident_description"),
         )

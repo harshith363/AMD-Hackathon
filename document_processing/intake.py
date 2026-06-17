@@ -81,7 +81,20 @@ def _needs_vision_fallback(result: dict[str, Any]) -> bool:
     text = result.get("extracted_text", "").strip()
     if not text:
         return True
-    useful_tokens = ["pan", "aadhaar", "aadhar", "date of birth", "dob", "address", "policy number"]
+    useful_tokens = [
+        "pan",
+        "aadhaar",
+        "aadhar",
+        "date of birth",
+        "dob",
+        "address",
+        "policy number",
+        "incident report",
+        "forensic report",
+        "root cause",
+        "claim amount",
+        "loss estimate",
+    ]
     return len(text) < 40 or not any(token in text.lower() for token in useful_tokens)
 
 
@@ -177,6 +190,7 @@ def _vision_payload_to_text(parsed: dict[str, Any]) -> str:
         "insured_name": "Insured Name",
         "claim_amount": "Claim Amount",
         "incident_date": "Incident Date",
+        "company_name": "Company Name",
     }
     for key, label in labels.items():
         value = fields.get(key)

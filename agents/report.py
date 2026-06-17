@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from llm import VLLMClient
+from mcp_server.client import get_claim_compliance_rules
 from orchestrator.trace import WorkflowTrace
 from schemas.messages import ExtractionResultMessage, ReportMessage, ValidationResultMessage
 
@@ -48,6 +49,13 @@ class ReportAgent:
             "next_action": validation.next_action,
             "trace": trace.to_list(),
         }
+        if workflow_type == "claim_validation":
+            json_report["claim_document_summary"] = _claim_document_summary(
+                self.llm_client,
+                json_report,
+                _documents_from_trace(trace),
+                get_claim_compliance_rules(customer_type, case_type),
+            )
         llm_explanation = self.llm_client.explain_report(json_report)
         if llm_explanation:
             json_report["llm_explanation"] = llm_explanation
@@ -126,8 +134,63 @@ def _group_extracted_fields_by_document(by_field: dict[str, Any]) -> dict[str, d
 def _document_debug_from_trace(trace: WorkflowTrace) -> list[dict[str, Any]]:
     for item in reversed(trace.to_list()):
         if item.get("agent") == "Document Intake Agent" and item.get("action") == "parsed_documents":
-            return item.get("details", {}).get("documents", [])
+            return (item.get("detail") or item.get("details") or {}).get("documents", [])
     return []
+
+
+def _documents_from_trace(trace: WorkflowTrace) -> list[dict[str, Any]]:
+    for item in reversed(trace.to_list()):
+        if item.get("agent") == "Document Intake Agent" and item.get("action") == "parsed_documents":
+            return (item.get("detail") or item.get("details") or {}).get("documents", [])
+    return []
+
+
+def _claim_document_summary(
+    llm_client: VLLMClient,
+    report: dict[str, Any],
+    documents: list[dict[str, Any]],
+    compliance_rules: dict[str, Any],
+) -> dict[str, Any]:
+    payload = {
+        "claim_details": report.get("user_inputs") or {},
+        "incident_description": report.get("incident_description"),
+        "extracted_by_document": report.get("extracted_by_document") or {},
+        "document_previews": [
+            {
+                "document_type": item.get("document_type"),
+                "file_name": item.get("file_name"),
+                "text_preview": item.get("text_preview"),
+                "extraction_method": item.get("extraction_method"),
+            }
+            for item in documents
+            if item.get("document_type") in {"incident_report", "forensic_report", "loss_estimate", "repair_estimate", "hospital_bill", "discharge_summary"}
+        ],
+        "compliance_rules_from_mcp": compliance_rules,
+    }
+    llm_summary = llm_client.summarize_claim_documents(payload)
+    if isinstance(llm_summary, dict):
+        llm_summary["source"] = "llm_with_mcp_rules"
+        return llm_summary
+    return _fallback_claim_document_summary(report, compliance_rules)
+
+
+def _fallback_claim_document_summary(report: dict[str, Any], compliance_rules: dict[str, Any]) -> dict[str, Any]:
+    details = report.get("user_inputs") or {}
+    extracted = report.get("extracted_key_fields") or {}
+    incident_description = report.get("incident_description") or "No incident description was provided."
+    claimant = details.get("company_name") or details.get("patient_name") or extracted.get("company_name") or extracted.get("patient_name") or "The claimant"
+    policy_number = details.get("policy_number") or extracted.get("policy_number") or "the submitted policy"
+    claim_amount = details.get("claim_amount") or extracted.get("claim_amount") or "not clearly extracted"
+    return {
+        "source": "deterministic_fallback",
+        "event_summary": f"{claimant} reported an event under policy {policy_number}. {incident_description}",
+        "timeline": f"Incident date: {details.get('incident_date') or extracted.get('incident_date') or 'not clearly extracted'}",
+        "likely_cause": "Requires review of incident/forensic narrative." if report.get("case_type") == "cybersecurity" else "Based on submitted incident narrative.",
+        "affected_assets_or_treatment": "Claim amount: INR " + str(claim_amount),
+        "evidence_reviewed": ", ".join(compliance_rules.get("required_documents") or []) or "Uploaded claim documents",
+        "coverage_reasoning": "Compared submitted document types and extracted fields against the MCP claim rule pack.",
+        "missing_or_unclear_information": ", ".join(report.get("missing_documents") or []) or "No required document gaps detected.",
+    }
 
 
 def _markdown_product_report(report: dict[str, Any]) -> str:

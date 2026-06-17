@@ -57,6 +57,36 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(report.json_report["status"], "Needs Additional Documents")
         self.assertIn("repair_estimate", report.json_report["missing_documents"])
 
+    def test_claim_upload_slots_define_document_types(self):
+        orchestrator = WorkflowOrchestrator()
+        doc_types = ["claim_form", "policy_copy", "incident_report", "repair_estimate"]
+        paths = [str(Path("sample_data/demo_claim_property") / f"{doc_type}.txt") for doc_type in doc_types]
+        report = orchestrator.run_document_validation(
+            DocumentPacketMessage(
+                session_id=orchestrator.new_session_id(),
+                customer_type="business",
+                workflow_type="claim_validation",
+                case_type="property_damage",
+                file_paths=paths,
+                expected_document_types=doc_types,
+                user_inputs={
+                    "company_name": "Acme Components Pvt Ltd",
+                    "policy_number": "BUS-PROP-7788",
+                    "incident_date": "14/05/2026",
+                    "claim_amount": "450000",
+                },
+                incident_description="On 14/05/2026 Acme Components Pvt Ltd reported fire damage under policy BUS-PROP-7788 for INR 450000.",
+            )
+        )
+
+        self.assertEqual(report.json_report["status"], "Ready for Submission")
+        self.assertEqual(
+            [item["document_type"] for item in report.json_report["document_debug"]],
+            doc_types,
+        )
+        self.assertTrue(all(item["document_type_source"] == "upload_slot" for item in report.json_report["document_debug"]))
+        self.assertIn("claim_document_summary", report.json_report)
+
     def test_business_kyb_missing_beneficial_ownership_only(self):
         orchestrator = WorkflowOrchestrator()
         report = orchestrator.run_document_validation(

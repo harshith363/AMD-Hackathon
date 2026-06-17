@@ -310,6 +310,11 @@ def _render_claim_document_uploader() -> None:
             for doc_type, uploaded_file in staged_files.items():
                 uploads[doc_type] = _save_uploaded_file_for_doc(uploaded_file, doc_type)
             st.session_state.collected["file_paths"] = [uploads[doc_type] for doc_type in required_documents]
+            st.session_state.collected["expected_document_types"] = list(required_documents)
+            st.session_state.collected["prefer_vision"] = any(
+                Path(uploads[doc_type]).suffix.lower() in {".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"}
+                for doc_type in required_documents
+            )
             st.session_state.collected = _normalize_intake(st.session_state.collected)
             st.session_state.messages.append({"role": "user", "content": "Uploaded all required claim documents and requested compliance analysis."})
             report = run_ready_workflow(st.session_state.orchestrator, st.session_state.collected)
@@ -649,6 +654,15 @@ def _handle_report(report) -> None:
         st.session_state.pending_kyc_report = report
         st.session_state.messages.append({"role": "assistant", "content": _kyc_review_summary(report)})
         st.session_state.awaiting_document_followup = not _kyc_details_align(report.json_report)
+    elif _is_claim_report(report):
+        st.session_state.collected = _empty_intake()
+        st.session_state.transcript = []
+        st.session_state.selected_option = None
+        st.session_state.show_options = False
+        st.session_state.awaiting_document_followup = False
+        st.session_state.claim_uploads = {}
+        st.session_state.upload_session_id = uuid4().hex[:10]
+        st.session_state.messages.append({"role": "assistant", "content": "Review the claim result below, then submit it or route it for manual approval."})
     elif _should_continue_document_workflow(report):
         st.session_state.collected = _prepare_followup_intake(st.session_state.collected, report)
         st.session_state.transcript = []
@@ -682,6 +696,11 @@ def _render_claim_review() -> None:
 
         st.markdown("**Incident summary**")
         st.info(_claim_incident_summary(payload))
+
+        claim_doc_summary = payload.get("claim_document_summary") or {}
+        if claim_doc_summary:
+            st.markdown("**LLM document review**" if claim_doc_summary.get("source") == "llm_with_mcp_rules" else "**Document review summary**")
+            st.info(_format_claim_document_summary(claim_doc_summary))
 
         st.markdown("**Coverage assessment**")
         coverage = _claim_coverage_assessment(payload)
@@ -739,6 +758,19 @@ def _render_claim_review() -> None:
                 st.info("No structured claim fields were extracted from the uploaded files.")
 
         _render_claim_manual_approval(payload)
+
+        if st.button("Start another claim check", use_container_width=True):
+            st.session_state.report = None
+            st.session_state.collected = {
+                **_empty_intake(),
+                "workflow_type": "claim_validation",
+            }
+            st.session_state.transcript = []
+            st.session_state.claim_uploads = {}
+            st.session_state.upload_session_id = uuid4().hex[:10]
+            st.session_state.messages.append({"role": "assistant", "content": "Sure. Is this claim for an individual or a business?"})
+            st.session_state.show_options = True
+            st.rerun()
 
 
 def _current_options() -> list[dict[str, str]]:
@@ -828,6 +860,24 @@ def _claim_coverage_assessment(payload: dict) -> dict[str, object]:
         "manual_review": True,
         "message": "Coverage cannot be automatically confirmed because some document fields do not match. The claim can still proceed through manual approval for demo or operations review.",
     }
+
+
+def _format_claim_document_summary(summary: dict) -> str:
+    lines = []
+    labels = [
+        ("event_summary", "Event"),
+        ("timeline", "Timeline"),
+        ("likely_cause", "Likely cause"),
+        ("affected_assets_or_treatment", "Impact"),
+        ("evidence_reviewed", "Evidence"),
+        ("coverage_reasoning", "Coverage reasoning"),
+        ("missing_or_unclear_information", "Missing or unclear"),
+    ]
+    for key, label in labels:
+        value = summary.get(key)
+        if value:
+            lines.append(f"{label}: {value}")
+    return "\n\n".join(lines) or "No claim document summary was generated."
 
 
 def _render_claim_manual_approval(payload: dict) -> None:
@@ -1047,6 +1097,11 @@ def _run_identity_validation(customer_type: str | None, *, payload_user_inputs: 
         "case_type": "kyb" if customer_type == "business" else "kyc",
         "user_inputs": payload_user_inputs,
         "file_paths": [uploads[doc_type] for doc_type in required_documents],
+        "expected_document_types": list(required_documents),
+        "prefer_vision": any(
+            Path(uploads[doc_type]).suffix.lower() in {".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"}
+            for doc_type in required_documents
+        ),
         "ready_to_run": True,
     }
     st.session_state.collected = _normalize_intake(st.session_state.collected)
@@ -1277,6 +1332,8 @@ def _identity_upload_prompt(customer_type: str) -> str:
 
 def _should_continue_document_workflow(report) -> bool:
     payload = report.json_report
+    if payload.get("workflow_type") == "claim_validation":
+        return False
     return (
         payload.get("customer_type") in {"individual", "business"}
         and payload.get("workflow_type") in {"claim_validation", "kyc_validation", "kyb_validation"}

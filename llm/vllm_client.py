@@ -221,9 +221,10 @@ class VLLMClient:
         prompt = (
             "Parse this Indian insurance/KYC document. Return JSON only. If a field is not visible, use null. "
             "Use document_type as one of pan, identity_proof, address_proof, bank_proof, claim_form, "
-            "policy_copy, hospital_bill, discharge_summary, unknown. Extract these fields where visible: "
+            "policy_copy, incident_report, repair_estimate, forensic_report, loss_estimate, "
+            "hospital_bill, discharge_summary, unknown. Extract these fields where visible: "
             "customer_name, date_of_birth, pan_number, aadhaar_number, address, phone_number, "
-            "policy_number, patient_name, insured_name, claim_amount, incident_date.\n\n"
+            "policy_number, patient_name, insured_name, company_name, claim_amount, incident_date.\n\n"
             "Return shape: {\"document_type\":\"unknown\",\"fields\":{},\"summary\":\"\"}. "
             "Every value inside fields must be a string or null, never an object or array."
         )
@@ -233,6 +234,29 @@ class VLLMClient:
                 data_url,
                 system="You are a precise document parsing engine. Return JSON only.",
                 max_tokens=420,
+                temperature=0.0,
+            )
+            parsed = _extract_json_object(content)
+            return parsed if isinstance(parsed, dict) else None
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+            return None
+
+    def summarize_claim_documents(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        prompt = (
+            "Review these insurance claim documents using the supplied claim compliance rules. "
+            "Focus on incident_report and forensic_report if present. Return JSON only with keys: "
+            "event_summary, timeline, likely_cause, affected_assets_or_treatment, evidence_reviewed, "
+            "coverage_reasoning, missing_or_unclear_information. Keep values concise and factual. "
+            "Do not approve the claim; explain what the documents indicate.\n\n"
+            f"{json.dumps(payload, indent=2)}"
+        )
+        try:
+            content = self.chat(
+                prompt,
+                system="You summarize insurance claim events against explicit compliance rules. Return JSON only.",
+                max_tokens=520,
                 temperature=0.0,
             )
             parsed = _extract_json_object(content)
