@@ -81,6 +81,40 @@ def _reset_conversation() -> None:
     st.session_state.claim_decisions = {}
 
 
+def _clear_active_workflow_ui_state(*, reset_intake: bool = False) -> None:
+    st.session_state.report = None
+    st.session_state.pending_policy_report = None
+    st.session_state.policy_application_approved = False
+    st.session_state.pending_kyc_report = None
+    st.session_state.awaiting_document_followup = False
+    st.session_state.identity_uploads = {}
+    st.session_state.claim_uploads = {}
+    st.session_state.claim_decisions = {}
+    st.session_state.upload_session_id = uuid4().hex[:10]
+    if reset_intake:
+        st.session_state.collected = _empty_intake()
+        st.session_state.transcript = []
+
+
+def _new_intake_is_starting() -> bool:
+    collected = st.session_state.get("collected") or {}
+    return (
+        not collected.get("customer_type")
+        and not collected.get("workflow_type")
+        and any(
+            st.session_state.get(key)
+            for key in ["report", "pending_policy_report", "pending_kyc_report", "identity_uploads", "claim_uploads"]
+        )
+    )
+
+
+def _typed_request_should_start_fresh() -> bool:
+    if st.session_state.get("pending_policy_report"):
+        return False
+    report = st.session_state.get("report")
+    return bool(st.session_state.get("pending_kyc_report") or (report and _is_claim_report(report)) or _new_intake_is_starting())
+
+
 def _render_header() -> None:
     top_left, top_right = st.columns([0.8, 0.2], vertical_alignment="center")
     with top_left:
@@ -608,6 +642,8 @@ def _handle_chat_input() -> None:
 
 
 def _submit_user_text(user_text: str) -> None:
+    if _typed_request_should_start_fresh():
+        _clear_active_workflow_ui_state(reset_intake=True)
     st.session_state.messages.append({"role": "user", "content": user_text})
     st.session_state.pending_user_text = user_text
     st.session_state.selected_option = None
@@ -617,6 +653,8 @@ def _submit_user_text(user_text: str) -> None:
 
 def _select_option(value: str) -> None:
     missing = _missing_fields(st.session_state.collected)
+    if "customer_type" in missing and _new_intake_is_starting():
+        _clear_active_workflow_ui_state()
     st.session_state.selected_option = None
     st.session_state.show_options = False
     if "customer_type" in missing:
