@@ -1003,26 +1003,35 @@ def _run_sample_business_kyb() -> None:
 
 def _run_sample_property_claim() -> None:
     _reset_conversation()
-    st.session_state.messages.append({"role": "user", "content": "Run sample business property claim compliance check."})
-    report = st.session_state.orchestrator.run_document_validation(
-        _sample_document_packet(
-            "business",
-            "claim_validation",
-            "property_damage",
-            "sample_data/business_property_claim",
-            user_inputs={
-                "company_name": "Acme Manufacturing Pvt Ltd",
-                "business_type": "manufacturing",
-                "registered_address": "12 Industrial Estate, Pune",
-                "contact_person": "Nisha Rao",
-                "contact_phone": "9876543210",
-                "annual_turnover": "50000000",
-                "employee_count": "120",
-            },
-            incident_description="Warehouse roof and inventory were damaged during heavy rain on 10/05/2026.",
-        )
+    required_documents = get_required_documents("business", "claim_validation", "property_damage")["required_documents"]
+    sample_dir = Path("sample_data/demo_claim_property")
+    st.session_state.claim_uploads = {
+        doc_type: str(sample_dir / f"{doc_type}.txt")
+        for doc_type in required_documents
+    }
+    st.session_state.collected = {
+        **_empty_intake(),
+        "customer_type": "business",
+        "workflow_type": "claim_validation",
+        "case_type": "property_damage",
+        "user_inputs": {
+            "company_name": "Acme Components Pvt Ltd",
+            "policy_number": "BUS-PROP-7788",
+            "incident_date": "14/05/2026",
+            "claim_amount": "450000",
+            "claim_type": "property_damage",
+        },
+        "incident_description": "On 14/05/2026 Acme Components Pvt Ltd reported fire damage to the stock room and electrical fixtures under policy BUS-PROP-7788 for INR 450000.",
+        "ready_to_run": False,
+    }
+    st.session_state.messages.append({"role": "user", "content": "Load sample business property claim details and documents."})
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": "Sample claim details and documents are filled in. Click **Upload and analyze claim documents** when you want to run validation.",
+        }
     )
-    _handle_report(report)
+    st.session_state.show_options = False
 
 
 def _sample_document_packet(customer_type: str, workflow_type: str, case_type: str, folder: str, **kwargs):
