@@ -78,6 +78,7 @@ def _reset_conversation() -> None:
     st.session_state.upload_session_id = uuid4().hex[:10]
     st.session_state.identity_uploads = {}
     st.session_state.claim_uploads = {}
+    st.session_state.claim_decisions = {}
 
 
 def _render_header() -> None:
@@ -881,9 +882,19 @@ def _format_claim_document_summary(summary: dict) -> str:
 
 
 def _render_claim_manual_approval(payload: dict) -> None:
+    report_id = payload.get("report_id") or "claim"
+    decision = st.session_state.setdefault("claim_decisions", {}).get(report_id)
+    if decision:
+        if decision.get("decision") == "submitted":
+            st.success(f"Claim submitted successfully. Decision stored at `{decision.get('path')}`.")
+        else:
+            st.warning(f"Claim routed for manual approval. Decision stored at `{decision.get('path')}`.")
+        return
+
     if payload.get("status") == "Ready for Submission":
         if st.button("Proceed with claim submission", type="primary", use_container_width=True):
             stored_path = _store_claim_decision(payload, decision="submitted")
+            _mark_claim_decision(payload, "submitted", stored_path)
             st.session_state.messages.append({"role": "assistant", "content": f"Claim marked for submission and stored at `{stored_path}`."})
             st.rerun()
         return
@@ -898,8 +909,17 @@ def _render_claim_manual_approval(payload: dict) -> None:
     )
     if st.button("Proceed with manual approval", type="primary", use_container_width=True, disabled=not acknowledged):
         stored_path = _store_claim_decision(payload, decision="manual_approval")
+        _mark_claim_decision(payload, "manual_approval", stored_path)
         st.session_state.messages.append({"role": "assistant", "content": f"Claim routed for manual approval and stored at `{stored_path}`."})
         st.rerun()
+
+
+def _mark_claim_decision(payload: dict, decision: str, stored_path: str) -> None:
+    report_id = payload.get("report_id") or "claim"
+    st.session_state.setdefault("claim_decisions", {})[report_id] = {
+        "decision": decision,
+        "path": stored_path,
+    }
 
 
 def _store_claim_decision(payload: dict, *, decision: str) -> str:
